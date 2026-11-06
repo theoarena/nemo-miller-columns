@@ -1,7 +1,6 @@
 # Miller Columns for Nemo
 
-A Nemo extension that brings column-based file browsing directly to your current window, 
-featuring instant file previews and a strong focus on speed and usability.
+A sleek Nemo extension bringing Miller columns to your active window, packed with instant file previews, in-column search, and top-tier responsiveness.
 
 The view runs in-process through GTK 3 and nemo-python.
 
@@ -44,7 +43,6 @@ Use the toolbar button or press Ctrl+4.
 ### Search
 
 Type in a column to filter files and folders. Matching ignores case.
-A leading Space is left to Nemo and the previewer; Space after a typed prefix is part of the search.
 
 ![Miller columns in Nemo: a chain of folders and a preview of the selected file](search-preview.png)
 
