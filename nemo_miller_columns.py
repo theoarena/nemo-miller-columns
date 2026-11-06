@@ -888,7 +888,9 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             window: Host window passed through to the board.
             reposition: When false, leave an existing board where it is.
 
-        @tags: #scope/slot-lifecycle #action/toggle #scope/navigation
+        @tags: #scope/slot-lifecycle #scope/view-preference #action/toggle
+            #scope/navigation #lifecycle/init #scope/widget #action/bind
+            #side-effect/gsettings
         """
         path = os.path.abspath(path)
         view = getattr(slot, "_miller_view", None)
@@ -901,6 +903,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
                 path,
                 target_window=window,
                 on_active_path_changed=lambda changed, host=slot: self._on_active_path(host, changed),
+                show_hidden=self._show_hidden_preference(),
             )
             slot._miller_view = view
             # EventBox, not Box. A Box wrapper would be detected as
@@ -984,11 +987,13 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
     def _attach_hidden_sync(self, view: MillerColumnsView) -> None:
         """Keep column dotfile visibility aligned with Nemo's preference.
 
-        Columns are born with ``show_hidden`` false and Ctrl+H flips only
-        the focused column. The same wrapper installs ``file_click_policy``
+        Columns inherit the board's ``show_hidden``; this sync is then a
+        no-op unless the preference changed. Ctrl+H still flips only the
+        focused column. The same wrapper installs ``file_click_policy``
         so the column modules stay free of GSettings.
 
-        @tags: #scope/view-preference #action/bind #side-effect/gsettings
+        @tags: #scope/view-preference #action/bind #lifecycle/init
+            #scope/widget #side-effect/gsettings #complexity/high
         """
         if getattr(view, "_miller_hidden_sync", False):
             return
@@ -998,7 +1003,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         def make_column(path: str, _original=original_make) -> object:
             """Wrap column construction to sync show-hidden preference.
 
-            @tags: #scope/view-preference #action/bind #side-effect/gsettings
+            @tags: #scope/view-preference #action/bind #lifecycle/init
+                #scope/widget #side-effect/gsettings #type/helper
             """
             column = _original(path)
             self._wrap_column_key(view, column)
@@ -1046,9 +1052,11 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         A missing schema skips the write. The sibling columns still follow
         the column the user just toggled.
 
-        @tags: #scope/view-preference #action/write #side-effect/gsettings #scope/widget
+        @tags: #scope/view-preference #action/write #action/toggle
+            #side-effect/gsettings #scope/widget #complexity/high
         """
         value = bool(source.show_hidden)
+        view.show_hidden = value
         try:
             settings = Gio.Settings.new("org.nemo.preferences")
             settings.set_boolean("show-hidden-files", value)
@@ -1091,7 +1099,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
     def _on_show_hidden_changed(self, settings: Gio.Settings, _key: str, view: MillerColumnsView) -> None:
         """Apply a preference change to columns that are still on screen.
 
-        @tags: #scope/view-preference #action/bind #side-effect/gsettings #scope/widget
+        @tags: #scope/view-preference #action/read #action/toggle #action/bind
+            #side-effect/gsettings #scope/widget
         """
         if getattr(view, "_dead", False):
             return
@@ -1099,6 +1108,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             value = bool(settings.get_boolean("show-hidden-files"))
         except Exception:
             return
+        view.show_hidden = value
         for column in list(getattr(view, "columns", ())):
             if getattr(column, "_dead", False):
                 continue

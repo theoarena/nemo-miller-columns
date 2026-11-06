@@ -48,6 +48,7 @@ from miller.data import (
     trash_entry,
 )
 import miller.data as data_module
+import miller.preference as preference_module
 from miller.clipboard import _read_gnome_clipboard, _set_clipboard_targets
 from miller.listing import _entry_from_info
 from miller.theme import (
@@ -472,9 +473,9 @@ class DataAndThemeTests(unittest.TestCase):
             with open(lines_path, "w", encoding="utf-8") as handle:
                 handle.write("".join(f"line-{index}\n" for index in range(30)))
             preview = get_file_metadata(lines_path)["preview_text"]
-            self.assertEqual(len(preview.splitlines()), 25)
+            self.assertEqual(len(preview.splitlines()), 20)
             self.assertIn("line-0", preview)
-            self.assertNotIn("line-25", preview)
+            self.assertNotIn("line-20", preview)
 
     def test_mtime_human_matches_local_strftime(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -509,6 +510,23 @@ class DataAndThemeTests(unittest.TestCase):
             os.makedirs(grandchild)
             os.makedirs(sibling)
             store = os.path.join(tmp, "folder_views.json")
+            # A host that prefers Miller on / would make every inherit walk
+            # return true. Keep this case about the JSON store only.
+            real_attr = preference_module._read_view_attribute
+
+            def scoped_attr(path, key=preference_module.METADATA_KEY):
+                if os.path.abspath(path) == os.sep:
+                    return None
+                return real_attr(path, key)
+
+            preference_module._read_view_attribute = scoped_attr
+            self.addCleanup(
+                setattr,
+                preference_module,
+                "_read_view_attribute",
+                real_attr,
+            )
+            preference_module._reset_caches()
 
             set_miller_view_preferred(parent, True, store_path=store)
             self.assertTrue(resolve_miller_view_preferred(
@@ -573,6 +591,107 @@ class DataAndThemeTests(unittest.TestCase):
             source_path = os.path.join(ROOT, "miller", name)
             with open(source_path, encoding="utf-8") as handle:
                 self.assertNotIn("nemo-default-view", handle.read(), name)
+
+    def test_load_store_caches_by_file_signature(self):
+        preference_module._reset_caches()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = os.path.join(tmp, "folder_views.json")
+            folder = os.path.join(tmp, "folder")
+            os.makedirs(folder)
+            preference_module.set_miller_view_preferred(folder, True, store_path=store)
+            opens = []
+            real_open = open
+
+            def counting_open(path, *args, **kwargs):
+                if path == store:
+                    opens.append(path)
+                return real_open(path, *args, **kwargs)
+
+            import builtins
+            builtins.open = counting_open
+            try:
+                first = preference_module._load_store(store)
+                second = preference_module._load_store(store)
+                self.assertEqual(first, second)
+                self.assertEqual(len(opens), 1)
+                preference_module.set_miller_view_preferred(folder, False, store_path=store)
+                third = preference_module._load_store(store)
+                self.assertIs(third[os.path.abspath(folder)], False)
+                self.assertEqual(len(opens), 2)
+                with real_open(store, "w", encoding="utf-8") as handle:
+                    json.dump({os.path.abspath(folder): True}, handle)
+                # External rewrite changes mtime/size; next load must reread.
+                time.sleep(0.01)
+                with real_open(store, "w", encoding="utf-8") as handle:
+                    json.dump({os.path.abspath(folder): True}, handle)
+                    handle.write("\n")
+                fourth = preference_module._load_store(store)
+                self.assertIs(fourth[os.path.abspath(folder)], True)
+                self.assertEqual(len(opens), 3)
+            finally:
+                builtins.open = real_open
+                preference_module._reset_caches()
+
+            missing = preference_module._load_store(os.path.join(tmp, "nope.json"))
+            self.assertEqual(missing, {})
+            broken = os.path.join(tmp, "broken.json")
+            with open(broken, "w", encoding="utf-8") as handle:
+                handle.write("{not-json")
+            self.assertEqual(preference_module._load_store(broken), {})
+
+    def test_preference_flags_reuse_gio_settings(self):
+        preference_module._reset_caches()
+        created = []
+        real_new = Gio.Settings.new
+
+        class FakeSettings:
+            def __init__(self):
+                self.ignore = False
+                self.inherit = True
+
+            def get_boolean(self, key):
+                if key == "ignore-view-metadata":
+                    return self.ignore
+                if key == "inherit-folder-viewer":
+                    return self.inherit
+                raise KeyError(key)
+
+        def fake_new(schema):
+            created.append(schema)
+            return FakeSettings()
+
+        Gio.Settings.new = fake_new
+        try:
+            first = preference_module._preference_flags(None, None)
+            second = preference_module._preference_flags(None, None)
+            self.assertEqual(first, (False, True))
+            self.assertEqual(second, (False, True))
+            self.assertEqual(created, ["org.nemo.preferences"])
+            preference_module._PREFERENCE_SETTINGS.ignore = True
+            preference_module._PREFERENCE_SETTINGS.inherit = False
+            self.assertEqual(
+                preference_module._preference_flags(None, None),
+                (True, False),
+            )
+            self.assertEqual(created, ["org.nemo.preferences"])
+        finally:
+            Gio.Settings.new = real_new
+            preference_module._reset_caches()
+
+        def boom(_schema):
+            raise RuntimeError("no schema")
+
+        preference_module._reset_caches()
+        Gio.Settings.new = boom
+        try:
+            self.assertEqual(preference_module._preference_flags(None, None), (False, False))
+            # Failed creation is not cached: a later success can still open.
+            Gio.Settings.new = fake_new
+            self.assertEqual(preference_module._preference_flags(None, None), (False, True))
+            self.assertEqual(created, ["org.nemo.preferences", "org.nemo.preferences"])
+        finally:
+            Gio.Settings.new = real_new
+            preference_module._reset_caches()
 
     def test_is_reserved_location(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -46,6 +46,7 @@ from miller.preference import (
     METADATA_KEY,
     RESERVED_VIEW_KEY,
     _preference_flags,
+    _reset_caches,
     is_reserved_location,
     resolve_miller_view_preferred,
     set_miller_view_preferred,

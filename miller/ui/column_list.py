@@ -283,17 +283,24 @@ class ColumnListMixin:
             return
 
     def set_show_hidden(self, show: bool) -> None:
-        """Show or hide dotfiles in this column and reload.
+        """Show or hide dotfiles in this column and reload when it changes.
+
+        A no-op when the value already matches: the host syncs every new
+        column, and an unconditional refresh would cancel ``_load_async``.
 
         Does not write the file-manager preference. The host pushes the
         setting into each column when it wants them to agree.
 
         Args:
             show: True to list names that start with a dot.
-    
-        @tags: #scope/view-preference #action/toggle #scope/widget
+
+        @tags: #scope/view-preference #scope/file-ops #action/read #action/toggle
+            #action/render #scope/widget #complexity/high
         """
-        self.show_hidden = bool(show)
+        show = bool(show)
+        if show == self.show_hidden:
+            return
+        self.show_hidden = show
         self.refresh()
 
     def _select_first_real(self) -> bool:

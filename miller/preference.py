@@ -4,6 +4,10 @@ The JSON file is what tests and headless runs can point at a temp path,
 and the Gio metadata attribute is what other processes can see on the
 folder. Both are our own key. The file manager's built-in view setting
 is never written.
+
+Reads reuse a module-level Gio.Settings and a JSON store cache keyed by
+file signature so navigating folders does not reopen the same file on
+every resolve. ``_reset_caches`` clears both for tests.
 """
 
 from __future__ import annotations
@@ -38,6 +42,27 @@ DEFAULT_STORE_PATH: str = os.path.abspath(
     os.path.expanduser("~/.config/nemo-miller-columns/folder_views.json")
 )
 
+# JSON store cache: path -> (st_ino, st_mtime_ns, st_size, store dict).
+# Invalidated on write (os.replace changes inode) or when the file signature
+# changes under us. Missing/corrupt files are not cached.
+# @tags: #type/constant #scope/view-preference #scope/shared #side-effect/filesystem
+_STORE_CACHE: dict[str, tuple[int, int, int, dict]] = {}
+
+# Lazily created Gio.Settings for org.nemo.preferences. Creation failures
+# are not cached so a later successful open can still work.
+# @tags: #type/constant #scope/view-preference #scope/shared #side-effect/gsettings
+_PREFERENCE_SETTINGS = None
+
+
+def _reset_caches() -> None:
+    """Drop preference caches so tests can isolate Settings and JSON reads.
+
+    @tags: #action/clear #scope/view-preference #scope/shared #type/helper
+        #lifecycle/destroy #side-effect/gsettings #side-effect/filesystem
+    """
+    global _PREFERENCE_SETTINGS
+    _STORE_CACHE.clear()
+    _PREFERENCE_SETTINGS = None
 
 
 def is_reserved_location(uri_or_path: str) -> bool:
@@ -183,22 +208,29 @@ def _preference_flags(
 ) -> tuple[bool, bool]:
     """Fill flags that the caller left as None.
 
-    Reads ``org.nemo.preferences`` and never writes it. Tests pass both
-    flags, so they do not depend on the user schema. If Settings is
-    unavailable, a missing flag is false.
+    Reads ``org.nemo.preferences`` and never writes it. The Settings
+    object is created once and reused; ``get_boolean`` still sees live
+    values. Tests pass both flags, so they do not depend on the user
+    schema. If Settings is unavailable, a missing flag is false.
 
-    @tags: #scope/view-preference #action/read #side-effect/gsettings
+    @tags: #scope/view-preference #scope/shared #action/read #type/helper
+        #side-effect/gsettings #lifecycle/init
     """
+    global _PREFERENCE_SETTINGS
     if ignore_metadata is not None and inherit_viewer is not None:
         return bool(ignore_metadata), bool(inherit_viewer)
 
     loaded_ignore = False
     loaded_inherit = False
     try:
-        settings = Gio.Settings.new("org.nemo.preferences")
+        settings = _PREFERENCE_SETTINGS
+        if settings is None:
+            settings = Gio.Settings.new("org.nemo.preferences")
+            _PREFERENCE_SETTINGS = settings
         loaded_ignore = bool(settings.get_boolean("ignore-view-metadata"))
         loaded_inherit = bool(settings.get_boolean("inherit-folder-viewer"))
     except Exception:
+        # Do not cache a failed open: the schema may appear later.
         loaded_ignore = False
         loaded_inherit = False
 
@@ -263,23 +295,44 @@ def _resolve_store_path(store_path: Optional[str]) -> str:
 def _load_store(store_path: Optional[str]) -> dict:
     """Load the folder view preference JSON store.
 
-    @tags: #scope/view-preference #action/read #side-effect/filesystem
+    Caches by file signature (inode, mtime_ns, size). Callers get a shallow
+    copy so mutating the returned dict cannot poison the cache. Missing or
+    invalid JSON returns ``{}`` and is not cached.
+
+    @tags: #scope/view-preference #scope/shared #action/read #type/helper
+        #side-effect/filesystem
     """
     path = _resolve_store_path(store_path)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    signature = (st.st_ino, st.st_mtime_ns, st.st_size)
+    cached = _STORE_CACHE.get(path)
+    if cached is not None and cached[:3] == signature:
+        return dict(cached[3])
     try:
         with open(path, "r", encoding="utf-8") as handle:
             raw = json.load(handle)
     except (OSError, json.JSONDecodeError):
+        _STORE_CACHE.pop(path, None)
         return {}
     if not isinstance(raw, dict):
+        _STORE_CACHE.pop(path, None)
         return {}
-    return {str(key): value for key, value in raw.items() if isinstance(value, bool)}
+    store = {str(key): value for key, value in raw.items() if isinstance(value, bool)}
+    _STORE_CACHE[path] = (*signature, store)
+    return dict(store)
 
 
 def _write_store(data: dict, store_path: Optional[str]) -> None:
     """Atomically persist the folder view preference JSON store.
 
-    @tags: #scope/view-preference #action/write #side-effect/filesystem
+    Drops the cache entry for ``path`` because ``os.replace`` installs a
+    new inode that would otherwise keep serving the pre-write dict until
+    the next stat mismatch.
+
+    @tags: #scope/view-preference #action/clear #action/write #side-effect/filesystem
     """
     path = _resolve_store_path(store_path)
     directory = os.path.dirname(path)
@@ -292,3 +345,4 @@ def _write_store(data: dict, store_path: Optional[str]) -> None:
         json.dump(data, handle, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(temporary, path)
+    _STORE_CACHE.pop(path, None)

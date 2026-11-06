@@ -30,6 +30,7 @@ gi.require_version("Nemo", "3.0")
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk
 
 import miller.data as data
+import miller.preference as preference
 from miller.ui.board import MillerColumnsView
 from nemo_miller_columns import MillerColumnsExtension
 
@@ -181,6 +182,7 @@ class ExtensionIntegrationTests(unittest.TestCase):
         self._old_open = data.open_in_same_window
         self._old_flags = data._preference_flags
         data.DEFAULT_STORE_PATH = os.path.join(self.tmp.name, "folder_views.json")
+        preference._reset_caches()
         self.nav_calls = []
 
         def record(path_or_uri, widget=None):
@@ -210,6 +212,7 @@ class ExtensionIntegrationTests(unittest.TestCase):
             data.DEFAULT_STORE_PATH = self._old_store
             data.open_in_same_window = self._old_open
             data._preference_flags = self._old_flags
+            preference._reset_caches()
         settings = getattr(self, "_settings", None)
         hidden = getattr(self, "_hidden", None)
         if settings is not None and hidden is not None:
@@ -920,11 +923,13 @@ class ExtensionIntegrationTests(unittest.TestCase):
         def boom(_schema):
             raise RuntimeError("settings unavailable")
 
+        preference._reset_caches()
         Gio.Settings.new = boom
         try:
             self.assertEqual(self.ext._click_policy(), "double")
         finally:
             Gio.Settings.new = original
+            preference._reset_caches()
 
     def _touch(self, directory):
         # Right only moves keyboard focus into a column that has a real row.

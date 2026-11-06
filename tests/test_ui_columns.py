@@ -390,7 +390,11 @@ class MillerColumnsUiTests(unittest.TestCase):
         view_params = list(inspect.signature(MillerColumnsView.__init__).parameters)
         self.assertEqual(
             view_params,
-            ["self", "initial_path", "target_window", "on_active_path_changed"],
+            ["self", "initial_path", "target_window", "on_active_path_changed", "show_hidden"],
+        )
+        self.assertIs(
+            inspect.signature(MillerColumnsView.__init__).parameters["show_hidden"].default,
+            False,
         )
         preview_params = list(inspect.signature(PreviewPane.update_file).parameters)
         self.assertEqual(preview_params, ["self", "path"])
@@ -817,6 +821,75 @@ class MillerColumnsUiTests(unittest.TestCase):
             column.set_show_hidden(False)
             self.assertNotIn(".secret", _entry_names(column))
             self.assertFalse(column.show_hidden)
+
+    def test_set_show_hidden_same_value_skips_refresh(self):
+        import miller.ui.column_list as column_list
+
+        with tempfile.TemporaryDirectory() as tmp:
+            held = {}
+            real = column_list.list_directory_async
+            refreshes = []
+
+            def fake(path, show_hidden, cancellable, callback):
+                held["callback"] = callback
+                held["cancellable"] = cancellable
+
+            column_list.list_directory_async = fake
+            previous = MillerColumnsView._wait_for_column_load
+            MillerColumnsView._wait_for_column_load = False
+            try:
+                column = MillerColumn(
+                    tmp,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                )
+                column.refresh = lambda: refreshes.append(True)
+                self.assertTrue(column._loading)
+                self.assertFalse(column.show_hidden)
+                column.set_show_hidden(False)
+                self.assertEqual(refreshes, [])
+                self.assertTrue(column._loading)
+                self.assertFalse(
+                    held["cancellable"].is_cancelled()
+                    if held.get("cancellable") is not None
+                    else False
+                )
+            finally:
+                column_list.list_directory_async = real
+                MillerColumnsView._wait_for_column_load = previous
+
+    def test_view_show_hidden_seeds_new_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child = os.path.join(tmp, "child")
+            os.makedirs(child)
+            with open(os.path.join(tmp, ".secret"), "w", encoding="utf-8") as handle:
+                handle.write("s")
+            with open(os.path.join(child, "note.txt"), "w", encoding="utf-8") as handle:
+                handle.write("n")
+            view = self.mount(MillerColumnsView(tmp, show_hidden=True))
+            column = view.columns[0]
+            self.assertTrue(view.show_hidden)
+            self.assertTrue(column.show_hidden)
+            self.assertIn(".secret", _entry_names(column))
+            refreshes = []
+            original_refresh = column.refresh
+
+            def spy_refresh():
+                refreshes.append(True)
+                return original_refresh()
+
+            column.refresh = spy_refresh
+            column.set_show_hidden(True)
+            self.assertEqual(refreshes, [])
+            column.select_name("child")
+            view.flush_selection()
+            self.assertTrue(column.handle_key(Gdk.KEY_Right))
+            wait_loaded(view.columns[-1])
+            child_column = view.columns[-1]
+            self.assertTrue(child_column.show_hidden)
+            self.assertEqual(child_column.directory_path, os.path.abspath(child))
 
     def test_ctrl_h_toggles_hidden_on_that_column(self):
         with tempfile.TemporaryDirectory() as tmp:

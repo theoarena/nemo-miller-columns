@@ -109,8 +109,9 @@ class MillerColumnsView(Gtk.EventBox):
         focused_index: Index of the directory Nemo was asked to show.
         target_window: Host window, stored for the extension. Unused for
             navigation so a column change cannot re-enter Nemo.
+        show_hidden: Dotfile visibility passed to every new column.
 
-    @tags: #scope/widget #type/widget #scope/navigation
+    @tags: #scope/widget #type/widget #scope/navigation #scope/view-preference
     """
 
     def __init__(
@@ -118,10 +119,16 @@ class MillerColumnsView(Gtk.EventBox):
         initial_path: str,
         target_window: Optional[Gtk.Window] = None,
         on_active_path_changed: Optional[Callable[[str], None]] = None,
+        show_hidden: bool = False,
         ) -> None:
         """Wire scroller, preview slot, and the initial column chain.
 
-        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind
+        ``show_hidden`` is applied when each column is built so the host
+        can sync Nemo's preference without a refresh that cancels the
+        first async listing.
+
+        @tags: #lifecycle/init #scope/widget #scope/navigation #scope/view-preference
+            #action/bind #side-effect/gsettings
         """
         super().__init__()
         self.get_style_context().add_class("mc-root")
@@ -132,6 +139,7 @@ class MillerColumnsView(Gtk.EventBox):
 
         self.target_window = target_window
         self.on_active_path_changed = on_active_path_changed
+        self.show_hidden = bool(show_hidden)
         self.columns: list[MillerColumn] = []
         self.focused_index = 0
         self._suspend_chain = False
@@ -537,9 +545,9 @@ class MillerColumnsView(Gtk.EventBox):
             self._suspend_chain = False
 
     def _make_column(self, path: str) -> MillerColumn:
-        """_make_column.
+        """Build one column that inherits the board's show-hidden flag.
 
-        @tags: #scope/widget #action/render #lifecycle/init
+        @tags: #scope/widget #scope/view-preference #action/render #lifecycle/init
         """
         return MillerColumn(
             path,
@@ -547,7 +555,7 @@ class MillerColumnsView(Gtk.EventBox):
             on_activate_dir=self._on_nav_right,
             on_nav_left=self._on_nav_left,
             on_nav_right=self._on_nav_right,
-            show_hidden=False,
+            show_hidden=self.show_hidden,
         )
 
     def _append_column(self, path: str) -> MillerColumn:
