@@ -6,7 +6,7 @@ Implementations live in ``miller.listing``, ``miller.preference``,
 are re-exported here so callers and tests keep a single module object.
 
 The column UI renders what ``list_directory`` and ``get_file_metadata``
-return. View preference is stored twice on purpose: the JSON file is what
+return. ``list_directory_async`` is the same listing off the GTK thread. View preference is stored twice on purpose: the JSON file is what
 tests and headless runs can point at a temp path, and the Gio metadata
 attribute is what other processes can see on the folder. Both are our own
 key. The file manager's built-in view setting is never written.
@@ -39,6 +39,7 @@ from miller.listing import (
     format_size,
     get_file_metadata,
     list_directory,
+    list_directory_async,
 )
 from miller.preference import (
     DEFAULT_STORE_PATH,
@@ -109,6 +110,7 @@ __all__ = [
     "is_reserved_location",
     "launch_with_app",
     "list_directory",
+    "list_directory_async",
     "open_file_default",
     "open_in_same_window",
     "parse_gnome_copied_files",

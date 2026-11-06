@@ -97,6 +97,37 @@ def pump_until(predicate, seconds=2.0):
     return False
 
 
+def wait_loaded(column, seconds=5.0):
+    """Pump until ``column`` has finished its initial listing."""
+    if not pump_until(lambda: not getattr(column, "_loading", False), seconds=seconds):
+        raise AssertionError("column load timed out: %s" % column.directory_path)
+
+
+def install_column_load_wait():
+    """Block test construction on the initial listing.
+
+    Production leaves the column loading. Existing tests read rows as soon
+    as the column exists, so the test double waits unless a case opts out
+    with ``MillerColumnsView._wait_for_column_load``.
+    """
+    if getattr(MillerColumnsView, "_load_wait_installed", False):
+        return
+    original = MillerColumnsView._make_column
+
+    def wrapped(self, path):
+        column = original(self, path)
+        if getattr(MillerColumnsView, "_wait_for_column_load", False):
+            wait_loaded(column)
+        return column
+
+    MillerColumnsView._make_column = wrapped
+    MillerColumnsView._load_wait_installed = True
+    MillerColumnsView._wait_for_column_load = True
+
+
+install_column_load_wait()
+
+
 def _delete_trashed(original_path: str) -> None:
     """Drop a file this test just trashed so the user trash stays clean."""
     info_dir = os.path.expanduser("~/.local/share/Trash/info")
@@ -319,7 +350,7 @@ class MillerColumnsUiTests(unittest.TestCase):
             window.destroy()
             pump()
 
-    def mount(self, view):
+    def mount(self, view, wait=True):
         child = self.window.get_child()
         if child is not None:
             self.window.remove(child)
@@ -333,6 +364,9 @@ class MillerColumnsUiTests(unittest.TestCase):
         rect.height = 480
         view.size_allocate(rect)
         pump()
+        if wait:
+            for column in view.columns:
+                wait_loaded(column)
         view._scroll_to_end()
         return view
 
@@ -2182,6 +2216,258 @@ class MillerColumnsUiTests(unittest.TestCase):
                 ["aa.txt", "ab.txt"],
             )
             self.assertNotIn("zz.txt", [entry.name for entry in column.get_selected_entries()])
+
+
+
+    def test_loading_row_is_present_until_the_listing_returns(self):
+        import miller.ui.column_list as column_list
+
+        with tempfile.TemporaryDirectory() as tmp:
+            held = {}
+            real = column_list.list_directory_async
+
+            def fake(path, show_hidden, cancellable, callback):
+                held["callback"] = callback
+                held["cancellable"] = cancellable
+
+            column_list.list_directory_async = fake
+            try:
+                column = MillerColumn(
+                    tmp,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                )
+                self.window.add(column)
+                self.window.show_all()
+                pump()
+                self.assertTrue(column._loading)
+                self.assertIn("Loading…", _label_texts(column))
+                self.assertEqual(_entry_names(column), [])
+                self.assertFalse(column.listbox.get_children()[0].get_selectable())
+                with open(os.path.join(tmp, "a.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("a")
+                from miller.data import list_directory
+                held["callback"](list_directory(tmp))
+                wait_loaded(column)
+                self.assertEqual(_entry_names(column), ["a.txt"])
+                self.assertNotIn("Loading…", _label_texts(column))
+
+                from miller.data import FileEntry
+                many = [
+                    FileEntry(
+                        f"f{index:03d}.txt",
+                        os.path.join(tmp, f"f{index:03d}.txt"),
+                        "file:///x",
+                        False,
+                        1,
+                        0,
+                        0,
+                        "text/plain",
+                        "text-x-generic-symbolic",
+                        "rw-r--r-- (644)",
+                        False,
+                    )
+                    for index in range(80)
+                ]
+                wide = MillerColumn(
+                    tmp,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                )
+                held["callback"](many)
+                # A large result must not replace the loading row in the
+                # enumeration callback. The rows arrive on a later timeout.
+                self.assertTrue(wide._loading)
+                self.assertIn("Loading…", _label_texts(wide))
+                self.assertEqual(_entry_names(wide), [])
+                wait_loaded(wide)
+                self.assertEqual(len(_entry_names(wide)), 80)
+                self.assertNotIn("Loading…", _label_texts(wide))
+            finally:
+                column_list.list_directory_async = real
+
+    def test_destroy_during_load_cancels_and_skips_the_callback(self):
+        import miller.ui.column_list as column_list
+
+        with tempfile.TemporaryDirectory() as tmp:
+            held = {}
+            selected = []
+            real = column_list.list_directory_async
+
+            def fake(path, show_hidden, cancellable, callback):
+                held["callback"] = callback
+                held["cancellable"] = cancellable
+
+            column_list.list_directory_async = fake
+            try:
+                column = MillerColumn(
+                    tmp,
+                    lambda _column, entry: selected.append(entry),
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                )
+                self.window.add(column)
+                self.window.show_all()
+                pump()
+                cancellable = held["cancellable"]
+                callback = held["callback"]
+                column.destroy()
+                pump()
+                self.assertTrue(cancellable.is_cancelled())
+                from miller.data import FileEntry
+                callback([
+                    FileEntry(
+                        "late.txt",
+                        os.path.join(tmp, "late.txt"),
+                        "file:///late.txt",
+                        False,
+                        1,
+                        0,
+                        0,
+                        "text/plain",
+                        "text-x-generic-symbolic",
+                        "rw-r--r-- (644)",
+                        False,
+                    )
+                ])
+                pump()
+                self.assertEqual(selected, [])
+            finally:
+                column_list.list_directory_async = real
+
+    def test_down_click_and_left_discard_a_loading_column(self):
+        import miller.ui.column_list as column_list
+
+        real = column_list.list_directory_async
+        held = []
+        hold_names = {"alpha"}
+
+        def fake(path, show_hidden, cancellable, callback):
+            if os.path.basename(path) in hold_names:
+                held.append((path, cancellable, callback))
+                return
+            real(path, show_hidden, cancellable, callback)
+
+        column_list.list_directory_async = fake
+        previous = MillerColumnsView._wait_for_column_load
+        MillerColumnsView._wait_for_column_load = False
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                alpha = os.path.join(tmp, "alpha")
+                beta = os.path.join(tmp, "beta")
+                os.makedirs(alpha)
+                os.makedirs(beta)
+                view = self.mount(MillerColumnsView(tmp), wait=False)
+                wait_loaded(view.columns[0])
+                column = view.columns[0]
+                column.handle_key(Gdk.KEY_Down)
+                view.flush_selection()
+                self.assertEqual(len(view.columns), 2)
+                loading = view.columns[1]
+                self.assertTrue(loading._loading)
+                self.assertIn("Loading…", _label_texts(loading))
+                alpha_cancel = held[-1][1]
+                column.handle_key(Gdk.KEY_Down)
+                view.flush_selection()
+                self.assertTrue(alpha_cancel.is_cancelled())
+                self.assertNotIn(loading, view.columns)
+                self.assertEqual(view.columns[1].directory_path, os.path.abspath(beta))
+                wait_loaded(view.columns[1])
+
+            held.clear()
+            hold_names.clear()
+            hold_names.add("slow")
+            with tempfile.TemporaryDirectory() as tmp:
+                alpha = os.path.join(tmp, "alpha")
+                slow = os.path.join(tmp, "slow")
+                os.makedirs(alpha)
+                os.makedirs(slow)
+                view = self.mount(MillerColumnsView(tmp), wait=False)
+                wait_loaded(view.columns[0])
+                _click_row(view.columns[0], _row_named(view.columns[0], "slow"))
+                loading = view.columns[1]
+                self.assertTrue(loading._loading)
+                slow_cancel = held[-1][1]
+                _click_row(view.columns[0], _row_named(view.columns[0], "alpha"))
+                self.assertTrue(slow_cancel.is_cancelled())
+                self.assertNotIn(loading, view.columns)
+                self.assertEqual(view.columns[1].directory_path, os.path.abspath(alpha))
+                wait_loaded(view.columns[1])
+
+            held.clear()
+            hold_names.clear()
+            hold_names.add("leaf")
+            with tempfile.TemporaryDirectory() as tmp:
+                mid = os.path.join(tmp, "mid")
+                leaf = os.path.join(mid, "leaf")
+                os.makedirs(leaf)
+                view = self.mount(MillerColumnsView(tmp), wait=False)
+                wait_loaded(view.columns[0])
+                view.columns[0].select_name("mid")
+                wait_loaded(view.columns[1])
+                view.columns[1].select_name("leaf")
+                loading = view.columns[2]
+                self.assertTrue(loading._loading)
+                leaf_cancel = held[-1][1]
+                view.columns[1].handle_key(Gdk.KEY_Left)
+                self.assertTrue(leaf_cancel.is_cancelled())
+                self.assertNotIn(loading, view.columns)
+                self.assertEqual(len(view.columns), 2)
+                self.assertEqual(view.focused_index, 0)
+        finally:
+            column_list.list_directory_async = real
+            MillerColumnsView._wait_for_column_load = previous
+
+    def test_refresh_stays_synchronous_after_the_initial_load(self):
+        import miller.ui.column_list as column_list
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "a.txt"), "w", encoding="utf-8") as handle:
+                handle.write("a")
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            self.assertFalse(column._loading)
+            self.assertEqual(_entry_names(column), ["a.txt"])
+            with open(os.path.join(tmp, "b.txt"), "w", encoding="utf-8") as handle:
+                handle.write("b")
+            column.refresh()
+            self.assertFalse(column._loading)
+            self.assertEqual(_entry_names(column), ["a.txt", "b.txt"])
+            column.select_name("b.txt")
+            self.assertEqual(column.get_selected().name, "b.txt")
+
+            held = {}
+            real = column_list.list_directory_async
+
+            def fake(path, show_hidden, cancellable, callback):
+                held["callback"] = callback
+
+            column_list.list_directory_async = fake
+            previous = MillerColumnsView._wait_for_column_load
+            MillerColumnsView._wait_for_column_load = False
+            try:
+                fresh = MillerColumn(
+                    tmp,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                )
+                self.assertTrue(fresh._loading)
+                fresh.refresh()
+                self.assertFalse(fresh._loading)
+                self.assertEqual(_entry_names(fresh), ["a.txt", "b.txt"])
+                held["callback"]([])
+                pump()
+                self.assertEqual(_entry_names(fresh), ["a.txt", "b.txt"])
+            finally:
+                column_list.list_directory_async = real
+                MillerColumnsView._wait_for_column_load = previous
 
 
 if __name__ == "__main__":

@@ -32,6 +32,9 @@ msgstr[1] "%d arquivos"
 msgid "Empty folder"
 msgstr "Pasta vazia"
 
+msgid "Loading…"
+msgstr "Carregando…"
+
 msgid "New Folder"
 msgstr "Nova Pasta"
 

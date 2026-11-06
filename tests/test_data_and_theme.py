@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -31,6 +32,7 @@ from miller.data import (
     is_reserved_location,
     launch_with_app,
     list_directory,
+    list_directory_async,
     open_in_same_window,
     parse_gnome_copied_files,
     recommended_apps,
@@ -190,6 +192,32 @@ class _InkWidget:
         _apply_accent_ink(self)
 
 
+
+def _pump_until(predicate, seconds=5.0):
+    """Iterate the main context until ``predicate`` is true."""
+    context = GLib.main_context_default()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        while context.pending():
+            context.iteration(False)
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _list_async(path, show_hidden=False, cancellable=None, seconds=5.0):
+    box = {}
+
+    def callback(entries):
+        box["entries"] = entries
+
+    list_directory_async(path, show_hidden, cancellable, callback)
+    if not _pump_until(lambda: "entries" in box, seconds):
+        return None
+    return box["entries"]
+
+
 def _file_info(name: str, file_type: Gio.FileType) -> Gio.FileInfo:
     info = Gio.FileInfo()
     info.set_name(name)
@@ -252,6 +280,74 @@ class DataAndThemeTests(unittest.TestCase):
 
             self.assertEqual(list_directory(os.path.join(tmp, "missing-dir")), [])
             self.assertEqual(list_directory(os.path.join(tmp, "file1.txt")), [])
+
+
+    def test_list_directory_async_matches_sync_order_and_hidden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("zebra", "apple", ".secret", "file10.txt", "file2.txt"):
+                target = os.path.join(tmp, name)
+                if name in ("zebra", "apple"):
+                    os.makedirs(target)
+                else:
+                    with open(target, "w", encoding="utf-8") as handle:
+                        handle.write(name)
+            visible = _list_async(tmp, show_hidden=False)
+            self.assertIsNotNone(visible)
+            self.assertEqual(
+                [entry.name for entry in visible],
+                [entry.name for entry in list_directory(tmp, show_hidden=False)],
+            )
+            shown = _list_async(tmp, show_hidden=True)
+            self.assertEqual(
+                [entry.name for entry in shown],
+                [entry.name for entry in list_directory(tmp, show_hidden=True)],
+            )
+            self.assertIs(data_module.list_directory_async, list_directory_async)
+
+    def test_list_directory_async_missing_path_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "missing-dir")
+            file_path = os.path.join(tmp, "file1.txt")
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            self.assertEqual(_list_async(missing), [])
+            self.assertEqual(_list_async(file_path), [])
+
+    def test_list_directory_async_cancel_before_start_skips_callback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            called = []
+            cancellable = Gio.Cancellable()
+            cancellable.cancel()
+            list_directory_async(tmp, False, cancellable, called.append)
+            _pump_until(lambda: False, seconds=0.2)
+            self.assertEqual(called, [])
+
+    def test_list_directory_async_cancel_during_enumeration_skips_callback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(5000):
+                with open(os.path.join(tmp, f"f{index}.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("x")
+            called = []
+            cancellable = Gio.Cancellable()
+            list_directory_async(tmp, False, cancellable, called.append)
+            cancellable.cancel()
+            _pump_until(lambda: False, seconds=0.5)
+            self.assertEqual(called, [])
+            self.assertTrue(cancellable.is_cancelled())
+
+    def test_list_directory_async_large_directory_completes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(5000):
+                with open(os.path.join(tmp, f"n{index:04d}.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("x")
+            async_entries = _list_async(tmp, seconds=20)
+            self.assertIsNotNone(async_entries)
+            sync_entries = list_directory(tmp)
+            self.assertEqual(
+                [entry.name for entry in async_entries],
+                [entry.name for entry in sync_entries],
+            )
+            self.assertEqual(len(async_entries), 5000)
 
     def test_directory_face_reads_file_info(self):
         directory = Gio.File.new_for_path("/tmp")

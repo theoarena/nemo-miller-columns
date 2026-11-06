@@ -3,19 +3,25 @@
 Mixed into ``MillerColumn``. The column reports selection upward and reloads
 itself after a directory change settles. A typed prefix hides rows in place;
 the directory is not listed again on each key.
+
+The first listing is asynchronous so a new column never blocks the GTK main
+loop on a huge directory. A destroy cancels it, and anything that needs the
+rows waits until they exist. Reloads after that stay synchronous: the folder
+is already visible and delete, paste, rename, the hidden-file toggle, and the
+directory monitor expect ``refresh`` to return only after the list matches disk.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Callable, Optional
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gio, GLib, Gtk, Pango
 
-from miller.data import FileEntry, list_directory
+from miller.data import FileEntry, list_directory, list_directory_async
 from miller.i18n import _, ngettext
 from miller.ui.dnd import attach_drag_and_drop
 
@@ -30,6 +36,15 @@ _EMBLEM_CORNERS = (
 )
 # Nemo finishes a drop after we return. Wait for the directory event to settle.
 _MONITOR_DEBOUNCE_MS = 200
+# Widget construction stays on the GTK thread. A slice this size is short
+# enough that a key can cancel the column before the next one starts.
+# @tags: #type/constant #scope/widget #format/int
+_ROW_BUILD_CHUNK = 40
+# An idle that returns true is always ready, so the main loop never polls:
+# the frame clock does not paint and the key sits in the socket until every
+# row exists. A timeout lets that poll happen between slices.
+# @tags: #type/constant #scope/widget #format/int
+_ROW_BUILD_INTERVAL_MS = 16
 
 
 def _item_count_label(count: int) -> str:
@@ -114,7 +129,15 @@ class ColumnListMixin:
     """Rows, selection state, and the directory monitor."""
 
     def refresh(self) -> None:
-        """Reload the directory. Selection is cleared and not announced.
+        """Reload the directory on the GTK thread. Selection is not announced.
+
+        The first open uses ``_load_async``. This stays synchronous because
+        those code paths already run on the GTK thread and expect to continue
+        with an up-to-date list when ``refresh`` returns; only the initial
+        population moves work off-thread. Delete, paste, rename, the hidden-file
+        toggle, and the directory monitor need the new rows before they return.
+        An initial load that has not finished is cancelled first; its callback must not paint
+        over the rows this rebuild just installed.
 
         The rebuild swallows ``row-selected`` so emptying the list does not
         look like the user cleared the selection. Callers that need the
@@ -122,15 +145,13 @@ class ColumnListMixin:
         Destroying the focused row clears window focus, so ownership is
         checked before the rebuild and restored afterwards.
 
-        @tags: #scope/file-ops #scope/navigation #action/read #action/bind #action/render #scope/widget
+        @tags: #scope/file-ops #scope/navigation #action/read #action/bind #action/render #scope/widget #action/clear #lifecycle/destroy
         """
+        self._cancel_load()
         had_focus = self._owns_focus()
         self._rebuilding = True
         try:
-            self.listbox.unselect_all()
-            for row in list(self.listbox.get_children()):
-                self.listbox.remove(row)
-                row.destroy()
+            self._clear_list_rows()
             entries = list_directory(self.directory_path, show_hidden=self.show_hidden)
             if entries:
                 for entry in entries:
@@ -144,6 +165,7 @@ class ColumnListMixin:
         self._sync_search_chrome()
         if had_focus:
             self.focus_row()
+        self._flush_after_load()
 
     def get_selected_entries(self) -> list[FileEntry]:
         """Return the selected real rows, in list order.
@@ -189,14 +211,20 @@ class ColumnListMixin:
     def focus_row(self) -> None:
         """Move keyboard focus onto a row in this column.
 
+        While the first listing is still running there is no row to focus.
+        The call waits and runs again once the rows exist, so a tab restore
+        does not land on the loading placeholder and then get stuck there.
+
         ``Gtk.ListBox`` itself is not focusable. Focus goes to the selected
         row when that row still matches the search, otherwise the first
         visible row, otherwise the empty-folder placeholder. A search that
         hides every row focuses the column itself so Left and Escape still
         arrive. The search label stays unfocusable.
 
-        @tags: #scope/navigation #action/bind #scope/widget
+        @tags: #scope/navigation #action/bind #scope/widget #complexity/high
         """
+        if self._defer_until_loaded(self.focus_row):
+            return
         selected = self.listbox.get_selected_row()
         row = selected if self._is_visible_real_row(selected) else None
         if row is None:
@@ -235,8 +263,11 @@ class ColumnListMixin:
         Args:
             name: Basename to select. Unknown names are ignored.
 
-        @tags: #scope/navigation #action/bind #scope/widget
+        @tags: #scope/navigation #action/bind #scope/widget #complexity/high
         """
+        if self._loading:
+            self._after_load.append(lambda name=name: self.select_name(name))
+            return
         for row in self.listbox.get_children():
             entry = getattr(row, "file_entry", None)
             if entry is None or entry.name != name:
@@ -273,9 +304,13 @@ class ColumnListMixin:
 
         Returns:
             True when a real row was selected. False for an empty folder.
+            Also false when the listing is still running: the select is
+            queued and the board's enter path retries after the rows exist.
 
-        @tags: #scope/navigation #action/bind #scope/widget #type/helper
+        @tags: #scope/navigation #action/bind #scope/widget #type/helper #complexity/high
         """
+        if self._defer_until_loaded(self._select_first_real):
+            return False
         for row in self._visible_real_rows():
             self._set_selection([row], notify=False)
             self._anchor_row = row
@@ -719,12 +754,225 @@ class ColumnListMixin:
         self._selection_from_user = False
         return False
 
+
+    def _load_async(self) -> None:
+        """Start the first listing and show a loading row until it finishes.
+
+        The rows are not built here. Enumeration happens off the GTK thread, and
+        painting waits until the sorted result is in hand so a cancel never
+        shows a partial folder the user already left. Sorting completes in the
+        worker before ``done`` runs, so chunks always append in final order.
+
+        @tags: #scope/file-ops #action/read #action/render #lifecycle/init #scope/widget #complexity/high #side-effect/filesystem
+        """
+        self._cancel_load()
+        generation = self._load_generation
+        self._loading = True
+        self._rebuilding = True
+        self._clear_list_rows()
+        self.listbox.add(self._make_loading_row())
+        self.listbox.show_all()
+        cancellable = Gio.Cancellable()
+        self._load_cancellable = cancellable
+
+        def done(entries: list[FileEntry]) -> None:
+            # Generation covers a sync refresh that won the race after the
+            # worker had already queued this callback.
+            if (
+                self._dead
+                or generation != self._load_generation
+                or cancellable.is_cancelled()
+            ):
+                return
+            self._start_row_chunks(entries)
+
+        list_directory_async(
+            self.directory_path,
+            self.show_hidden,
+            cancellable,
+            done,
+        )
+
+    def _start_row_chunks(self, entries: list[FileEntry]) -> None:
+        """Replace the loading row, then add real rows a slice at a time.
+
+        ``_rebuilding`` stays set across every slice so ``row-selected``
+        from the list realizing itself cannot open another column.
+
+        ``entries`` are already in display order. A folder that fits in one
+        slice replaces the loading row immediately, so a normal directory
+        does not flash it. A larger folder keeps "Loading…" up and builds
+        rows on a timeout: the main loop has to poll between slices or the
+        frame clock never paints and a key never arrives.
+
+        @tags: #scope/widget #action/render #scope/file-ops #complexity/high
+        """
+        if self._dead or not self._loading:
+            return
+        self._pending_entries = entries
+        self._chunk_index = 0
+        if not entries:
+            self._clear_list_rows()
+            self.listbox.add(self._make_empty_row())
+            self._finish_load()
+            return
+        if len(entries) <= _ROW_BUILD_CHUNK:
+            self._clear_list_rows()
+            self._add_row_slice()
+            self._pending_entries = []
+            self._finish_load()
+            return
+        self._load_idle = GLib.timeout_add(_ROW_BUILD_INTERVAL_MS, self._add_row_chunk)
+
+    def _add_row_chunk(self) -> bool:
+        """Add the next slice of rows. Returning true keeps the idle source.
+
+        @tags: #scope/widget #action/render #scope/file-ops #lifecycle/destroy
+        """
+        if (
+            self._dead
+            or not self._loading
+            or self._load_cancellable is None
+            or self._load_cancellable.is_cancelled()
+        ):
+            self._load_idle = 0
+            return False
+        if self._chunk_index == 0:
+            # The loading row has had a turn to paint. Drop it before the
+            # real rows, not in the enumeration callback.
+            self._clear_list_rows()
+        self._add_row_slice()
+        if self._chunk_index < len(self._pending_entries):
+            return True
+        self._load_idle = 0
+        self._pending_entries = []
+        self._finish_load()
+        return False
+
+    def _add_row_slice(self) -> None:
+        """Append up to ``_ROW_BUILD_CHUNK`` rows from the pending listing.
+
+        @tags: #scope/widget #action/render #scope/file-ops #type/helper
+        """
+        entries = self._pending_entries
+        end = min(self._chunk_index + _ROW_BUILD_CHUNK, len(entries))
+        for entry in entries[self._chunk_index:end]:
+            row = self._make_row(entry)
+            self.listbox.add(row)
+            row.show_all()
+        self._chunk_index = end
+
+    def _finish_load(self) -> None:
+        """Show the finished list and run calls that were waiting for rows.
+
+        Same tail as ``refresh``: ``show_all`` would reveal a search chip
+        that should stay hidden, and focus has to come back if this column
+        still owns it. Queued callers run after that, once ``_loading`` is
+        clear, so they see the real rows.
+
+        @tags: #scope/widget #action/render #action/bind #scope/navigation #scope/file-ops
+        """
+        if self._dead:
+            return
+        self._loading = False
+        self._load_cancellable = None
+        self._rebuilding = False
+        had_focus = self._owns_focus()
+        self.listbox.show_all()
+        self._sync_search_chrome()
+        if had_focus:
+            self.focus_row()
+        self._flush_after_load()
+
+    def _cancel_load(self) -> None:
+        """Drop an in-flight listing and its idle row builder.
+
+        Bumping the generation makes a callback that was already queued
+        a no-op, even when the worker finished before ``cancel`` landed.
+
+        @tags: #scope/file-ops #lifecycle/destroy #action/clear #scope/widget
+        """
+        self._load_generation += 1
+        cancellable = self._load_cancellable
+        self._load_cancellable = None
+        if cancellable is not None:
+            cancellable.cancel()
+        if self._load_idle:
+            GLib.source_remove(self._load_idle)
+            self._load_idle = 0
+        self._pending_entries = []
+        self._loading = False
+
+    def _defer_until_loaded(self, callback: Callable[[], None]) -> bool:
+        """Queue ``callback`` while the first listing is still running.
+
+        Args:
+            callback: Called once, after the rows exist. Not called if the
+                column is destroyed first.
+
+        Returns:
+            True when the caller should return. The work was queued.
+
+        @tags: #scope/navigation #action/bind #type/helper #scope/widget
+        """
+        if not self._loading:
+            return False
+        self._after_load.append(callback)
+        return True
+
+    def _flush_after_load(self) -> None:
+        """Run queued selects and focus grabs, now that rows exist.
+
+        @tags: #scope/navigation #action/bind #type/helper #scope/widget
+        """
+        pending = self._after_load
+        self._after_load = []
+        for callback in pending:
+            if self._dead:
+                return
+            callback()
+
+    def _clear_list_rows(self) -> None:
+        """Remove every row. Caller holds ``_rebuilding`` when that matters.
+
+        @tags: #scope/widget #action/clear #type/helper
+        """
+        self.listbox.unselect_all()
+        for row in list(self.listbox.get_children()):
+            self.listbox.remove(row)
+            row.destroy()
+
+    def _make_loading_row(self) -> Gtk.ListBoxRow:
+        """One non-selectable status row shown until the listing returns.
+
+        Same treatment as the empty-folder placeholder: it is not a file,
+        so selection, copy, and trash skip it.
+
+        @tags: #scope/widget #action/render
+        """
+        row = Gtk.ListBoxRow()
+        row.set_selectable(False)
+        row.set_activatable(False)
+        row.file_entry = None
+        label = Gtk.Label(label=_("Loading…"))
+        label.get_style_context().add_class("mc-empty")
+        label.set_halign(Gtk.Align.CENTER)
+        label.set_hexpand(True)
+        label.set_margin_top(12)
+        label.set_margin_bottom(12)
+        row.add(label)
+        return row
+
     def _on_destroy(self, *_args) -> None:
-        """_on_destroy.
+        """Cancel the listing. A late callback must not touch this widget.
 
         @tags: #scope/widget #lifecycle/destroy
         """
         self._dead = True
+        # Drop queued selects before cancel. A callback that still runs
+        # belongs to a column the user already left.
+        self._after_load.clear()
+        self._cancel_load()
         self._stop_directory_monitor()
         if self._context_menu is not None:
             self._context_menu.destroy()

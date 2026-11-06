@@ -10,7 +10,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 import gi
 
@@ -54,6 +54,11 @@ _LIST_ATTRIBUTES = ",".join((
     "metadata::custom-icon-name",
     "metadata::emblems",
 ))
+
+# One async page. The column still sorts the full result before painting,
+# so a larger page only cuts callback traffic.
+# @tags: #type/constant #scope/file-ops #format/int
+_ENUMERATE_BATCH = 256
 
 
 @dataclass
@@ -125,7 +130,7 @@ def list_directory(path: str, show_hidden: bool = False) -> list[FileEntry]:
     Returns:
         Entry rows. Empty when ``path`` cannot be listed.
 
-    @tags: #scope/file-ops #action/read #type/helper
+    @tags: #scope/file-ops #action/read #type/helper #side-effect/filesystem
     """
     directory = Gio.File.new_for_path(os.path.abspath(os.path.expanduser(path)))
     enumerator = None
@@ -141,25 +146,174 @@ def list_directory(path: str, show_hidden: bool = False) -> list[FileEntry]:
             if info is None:
                 break
             entry = _entry_from_info(directory, info)
-            if entry.name in (".", ".."):
-                continue
-            # Dotfiles stay out of the default listing. The column has its
-            # own toggle; we do not follow Gio's hidden flag, which can
-            # disagree with a leading-dot name on some backends.
-            if entry.is_hidden and not show_hidden:
-                continue
-            entries.append(entry)
+            if _include_entry(entry, show_hidden):
+                entries.append(entry)
     except GLib.Error:
         return []
     finally:
-        if enumerator is not None:
-            try:
-                enumerator.close(None)
-            except GLib.Error:
-                pass
-    # Directories first (False < True), then natural order inside the group.
+        _close_enumerator(enumerator)
+    return _sort_entries(entries)
+
+
+def list_directory_async(
+    path: str,
+    show_hidden: bool,
+    cancellable: Optional[Gio.Cancellable],
+    callback: Callable[[list[FileEntry]], None],
+) -> None:
+    """List one directory off the calling thread and pass the rows to ``callback``.
+
+    Enumeration runs in the GLib thread pool. ``callback`` runs on the
+    main context that was current when this function was called, with the
+    same order and hidden-file rules as ``list_directory``. The rows are
+    delivered once, after the last page: a column that is about to be
+    destroyed should not paint a prefix it will throw away.
+
+    A cancel delivers nothing. Skipping ``callback`` on cancel avoids applying
+    rows after ``refresh`` or destroy replaced the column state—the worker may
+    finish after those paths ran. It is also not invoked when
+    ``cancellable`` is already cancelled. Any other failure delivers an
+    empty list, matching the synchronous contract.
+
+    Args:
+        path: Directory path. ``~`` is expanded.
+        show_hidden: When false, names starting with ``.`` are omitted.
+        cancellable: Cancel handle. ``None`` cannot be cancelled.
+        callback: Receives the finished rows. Not called after a cancel.
+
+    @tags: #scope/file-ops #action/read #type/helper #side-effect/filesystem #complexity/high
+    """
+    if cancellable is not None and cancellable.is_cancelled():
+        return
+    directory = Gio.File.new_for_path(os.path.abspath(os.path.expanduser(path)))
+    entries: list[FileEntry] = []
+
+    def finish(enumerator, error: Optional[GLib.Error]) -> None:
+        _close_enumerator(enumerator)
+        if _load_was_cancelled(error, cancellable):
+            # No callback: see ``list_directory_async`` docstring—caller already
+            # moved on (refresh/destroy).
+            return
+        callback([] if error is not None else _sort_entries(entries))
+
+    def on_next(enumerator, result, _data) -> None:
+        # Gio requires ``*_finish`` for every async result; abandoning ``result``
+        # leaks the in-flight op. Cancellation still skips ``callback`` above.
+        try:
+            infos = enumerator.next_files_finish(result)
+        except GLib.Error as error:
+            finish(enumerator, error)
+            return
+        if cancellable is not None and cancellable.is_cancelled():
+            _close_enumerator(enumerator)
+            return
+        if not infos:
+            finish(enumerator, None)
+            return
+        for info in infos:
+            entry = _entry_from_info(directory, info)
+            if _include_entry(entry, show_hidden):
+                entries.append(entry)
+        if cancellable is not None and cancellable.is_cancelled():
+            _close_enumerator(enumerator)
+            return
+        enumerator.next_files_async(
+            _ENUMERATE_BATCH,
+            GLib.PRIORITY_DEFAULT,
+            cancellable,
+            on_next,
+            None,
+        )
+
+    def on_enumerated(source, result, _data) -> None:
+        try:
+            enumerator = source.enumerate_children_finish(result)
+        except GLib.Error as error:
+            finish(None, error)
+            return
+        if cancellable is not None and cancellable.is_cancelled():
+            _close_enumerator(enumerator)
+            return
+        enumerator.next_files_async(
+            _ENUMERATE_BATCH,
+            GLib.PRIORITY_DEFAULT,
+            cancellable,
+            on_next,
+            None,
+        )
+
+    directory.enumerate_children_async(
+        _LIST_ATTRIBUTES,
+        Gio.FileQueryInfoFlags.NONE,
+        GLib.PRIORITY_DEFAULT,
+        cancellable,
+        on_enumerated,
+        None,
+    )
+
+
+def _include_entry(entry: FileEntry, show_hidden: bool) -> bool:
+    """Return whether one enumerated name belongs in the column.
+
+    ``.`` and ``..`` are never listed. Dotfiles stay out unless the column
+    asked for them. Gio's hidden flag is ignored: on some backends it does
+    not match a leading dot.
+
+    Args:
+        entry: Row built from one ``Gio.FileInfo``.
+        show_hidden: True when dotfiles are included.
+
+    Returns:
+        True when the row should be kept.
+
+    @tags: #scope/file-ops #action/read #type/helper #side-effect/pure-function
+    """
+    if entry.name in (".", ".."):
+        return False
+    if entry.is_hidden and not show_hidden:
+        return False
+    return True
+
+
+def _sort_entries(entries: list[FileEntry]) -> list[FileEntry]:
+    """Order directories first, then case-insensitive natural names.
+
+    Args:
+        entries: Unsorted rows. The list is sorted in place.
+
+    Returns:
+        The same list, ordered.
+
+    @tags: #scope/file-ops #action/read #type/helper #side-effect/pure-function
+    """
+    # False < True, so ``not is_dir`` puts directories in front.
     entries.sort(key=lambda entry: (not entry.is_dir, _natural_key(entry.name)))
     return entries
+
+
+def _close_enumerator(enumerator) -> None:
+    """Close an enumerator, ignoring a second close or a failed backend.
+
+    @tags: #scope/file-ops #action/clear #type/helper #side-effect/filesystem
+    """
+    if enumerator is None:
+        return
+    try:
+        enumerator.close(None)
+    except GLib.Error:
+        pass
+
+
+def _load_was_cancelled(error: Optional[GLib.Error], cancellable) -> bool:
+    """Return whether the listing stopped because the caller cancelled it.
+
+    @tags: #scope/file-ops #action/read #type/helper #side-effect/pure-function
+    """
+    if cancellable is not None and cancellable.is_cancelled():
+        return True
+    return bool(
+        error is not None and error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED)
+    )
 
 
 def get_file_metadata(path: str) -> dict:

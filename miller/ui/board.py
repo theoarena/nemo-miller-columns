@@ -7,11 +7,14 @@ the column widths. The natural size still follows the columns.
 
 Selecting a directory appends one column and points the active path at
 that child, so the host path bar follows the folder that just opened.
-Up/Down onto a directory waits before that listing: ``list_directory`` runs
-on the GTK thread, and key repeat would otherwise open every folder the
-cursor only passed. A click, a file, and Right/Enter do not wait.
-Selecting a file, nothing, or several rows drops the columns to the right
-and points the active path at the column that holds the selection.
+The new column lists itself off the GTK thread. Up/Down onto a directory
+opens that column on the next main-loop turn, so a folder that is still
+building rows is destroyed before another slice runs. A click, a
+file, and Right/Enter do not wait. Destroying a column cancels its
+listing, which is how Left, another click, or a further Up/Down abandons
+a folder that has not finished loading. Selecting a file, nothing, or
+several rows drops the columns to the right and points the active path
+at the column that holds the selection.
 ``focused_index`` is the directory Nemo was asked to show. The accent
 stays on the column the user is acting in, and keyboard focus follows
 the accent.
@@ -37,10 +40,11 @@ from miller.theme import bind_accent_ink, install_theme
 from miller.ui.column import MillerColumn
 from miller.ui.preview import PreviewPane
 
-# Up/Down onto a directory waits this long before list_directory runs.
-# Key repeat is faster than a folder listing on the GTK thread, so a
-# shorter delay still opens folders the cursor only passed through.
-# Clicks and file rows do not use this timer.
+# Up/Down onto a directory opens it on the next main-loop turn. A longer
+# wait left the previous column building rows, and that build held the
+# GTK thread, so the key looked late and the window looked frozen. Repeat
+# still resets this timer: keys already queued collapse into the last
+# folder. Clicks and file rows do not use this timer.
 # @tags: #type/constant #scope/navigation #format/int
 _KEYBOARD_DIR_DELAY_MS = 180
 
@@ -243,8 +247,8 @@ class MillerColumnsView(Gtk.EventBox):
     def flush_selection(self) -> None:
         """Apply a keyboard folder open that is still waiting.
 
-        Up/Down onto a directory waits ``_KEYBOARD_DIR_DELAY_MS`` so key
-        repeat does not list every folder it passes. Clicks, files, and
+        Up/Down onto a directory waits ``_KEYBOARD_DIR_DELAY_MS`` so keys
+        already queued collapse into one folder. Clicks, files, and
         Right/Enter apply in the select handler, so this is a no-op unless
         that wait is still pending. Tests call it to open the last folder
         without sleeping.
@@ -292,9 +296,10 @@ class MillerColumnsView(Gtk.EventBox):
     def _on_column_select(self, column: MillerColumn, entry: Optional[FileEntry]) -> None:
         """Apply a click now, and wait only for a keyboard move onto a folder.
 
-        Up/Down shares this callback with clicks. Listing a directory blocks
-        the GTK thread, and key repeat is faster than that listing, so a
-        folder reached by arrow waits ``_KEYBOARD_DIR_DELAY_MS``. The row
+        Up/Down shares this callback with clicks. A folder reached by arrow
+        waits ``_KEYBOARD_DIR_DELAY_MS`` (the next main-loop turn) so a
+        column that is still building rows is destroyed before another
+        slice runs. The row
         highlight is already on the column; only the chain to the right waits.
         A click, a file, Shift+extend, ``select_name``, Right, or Enter
         cancels that wait and updates the chain in this call.
@@ -394,6 +399,11 @@ class MillerColumnsView(Gtk.EventBox):
         row, because there is no row to enter. The active path still follows
         the opened column: ``_apply_selection`` already reported it.
 
+        When the child is still on its first async listing, the steps that need
+        real rows run from ``_after_load`` instead of here. Otherwise
+        ``_select_first_real`` would see only the loading row and behave like
+        an empty folder.
+
         @tags: #scope/navigation #scope/widget #scope/file-ops #action/bind #action/navigate #action/render #action/clear #type/helper
         """
         if entry is None or not entry.is_dir or column not in self.columns:
@@ -406,6 +416,29 @@ class MillerColumnsView(Gtk.EventBox):
         if child_index >= len(self.columns):
             return
         child = self.columns[child_index]
+        # The child may still be listing. Running the select now would see
+        # the loading row, treat the folder as empty, and leave focus here.
+        if child._loading:
+            child._after_load.append(lambda child=child: self._finish_nav_right(child))
+            return
+        self._finish_nav_right(child)
+
+    def _finish_nav_right(self, child: MillerColumn) -> None:
+        """Select the child's first row once that column has real rows.
+
+        Runs at once when the listing is already done, or from the child's
+        load queue. Destroy clears that queue; the guard covers a callback
+        that started before the column died.
+
+        Auto-select uses ``_suspend_chain`` around ``_select_first_real``
+        because that path emits ``on_select``; leaving the flag clear would
+        let ``_on_column_select`` treat the keyboard-driven highlight like a
+        user choice and append another column.
+
+        @tags: #scope/navigation #action/bind #action/navigate #scope/widget #type/helper #complexity/high
+        """
+        if self._dead or child._dead or child not in self.columns:
+            return
         if child.get_selected() is None:
             self._suspend_chain = True
             try:
@@ -417,6 +450,7 @@ class MillerColumnsView(Gtk.EventBox):
         selected = child.get_selected()
         if selected is not None and not selected.is_dir:
             self._apply_selection(child, selected)
+        child_index = self.columns.index(child)
         self.focused_index = child_index
         self._mark_current_column(child)
         self._notify_active_path()
@@ -445,7 +479,13 @@ class MillerColumnsView(Gtk.EventBox):
         self._queue_scroll()
 
     def _climb_to_parent(self, column: MillerColumn) -> None:
-        """_climb_to_parent.
+        """Insert the parent directory as a new left column and highlight the folder left behind.
+
+        ``select_name`` fires ``on_select``; ``_replay_suspended_select`` raises
+        ``_suspend_chain`` so that highlight does not open the child again.
+        When the parent is still listing, the same deferred path runs from
+        ``_after_load``; otherwise the suspend window would be missed and the
+        child column would re-append.
 
         @tags: #scope/navigation #action/render #scope/widget
         """
@@ -462,17 +502,39 @@ class MillerColumnsView(Gtk.EventBox):
         self.columns_box.pack_start(parent_column, False, False, 0)
         self.columns_box.reorder_child(parent_column, 0)
         parent_column.show_all()
-        self._suspend_chain = True
-        try:
-            parent_column.select_name(previous_name)
-        finally:
-            self._suspend_chain = False
+        # The select notifies the board. If it is deferred until the listing
+        # finishes, the suspend flag has to be raised again then or the
+        # highlight opens the folder we just climbed out of.
+        if parent_column._loading:
+            parent_column._after_load.append(
+                lambda column=parent_column, name=previous_name: self._replay_suspended_select(
+                    column, name
+                )
+            )
+        else:
+            self._replay_suspended_select(parent_column, previous_name)
         self.focused_index = 0
         self._prune_from(2)
         self._mark_current_column(self.columns[0])
         self._notify_active_path()
         self.focus_active_column()
         self._queue_scroll()
+
+    def _replay_suspended_select(self, column: MillerColumn, name: str) -> None:
+        """Select ``name`` without letting that selection open another column.
+
+        Climbing highlights the folder we just left. The select signal would
+        otherwise append that same folder again.
+
+        @tags: #scope/navigation #action/bind #scope/widget #type/helper #complexity/high
+        """
+        if self._dead or column._dead or column not in self.columns:
+            return
+        self._suspend_chain = True
+        try:
+            column.select_name(name)
+        finally:
+            self._suspend_chain = False
 
     def _make_column(self, path: str) -> MillerColumn:
         """_make_column.

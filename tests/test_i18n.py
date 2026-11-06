@@ -23,12 +23,14 @@ class I18nTests(unittest.TestCase):
     def test_pt_catalog_empty_folder_and_plurals(self):
         install(languages=["pt"])
         self.assertEqual(_("Empty folder"), "Pasta vazia")
+        self.assertEqual(_("Loading…"), "Carregando…")
         self.assertEqual(ngettext("%d item", "%d items", 1) % 1, "1 item")
         self.assertEqual(ngettext("%d item", "%d items", 2) % 2, "2 itens")
 
     def test_pt_BR_uses_pt_catalog(self):
         install(languages=["pt_BR"])
         self.assertEqual(_("Empty folder"), "Pasta vazia")
+        self.assertEqual(_("Loading…"), "Carregando…")
 
     def test_missing_language_returns_english_msgid(self):
         install(languages=["ru"])

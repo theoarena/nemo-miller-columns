@@ -106,6 +106,39 @@ def pump():
         context.iteration(False)
 
 
+def wait_loaded(column, seconds=5.0):
+    """Pump until a column's first listing has finished."""
+    context = GLib.main_context_default()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        while context.pending():
+            context.iteration(False)
+        if not getattr(column, "_loading", False):
+            return
+        time.sleep(0.01)
+    raise AssertionError("column load timed out: %s" % column.directory_path)
+
+
+def _install_column_load_wait():
+    """Existing cases read rows immediately, so construction waits."""
+    if getattr(MillerColumnsView, "_load_wait_installed", False):
+        return
+    original = MillerColumnsView._make_column
+
+    def wrapped(self, path):
+        column = original(self, path)
+        if getattr(MillerColumnsView, "_wait_for_column_load", False):
+            wait_loaded(column)
+        return column
+
+    MillerColumnsView._make_column = wrapped
+    MillerColumnsView._load_wait_installed = True
+    MillerColumnsView._wait_for_column_load = True
+
+
+_install_column_load_wait()
+
+
 def _control_key(keyval):
     return SimpleNamespace(keyval=keyval, state=Gdk.ModifierType.CONTROL_MASK)
 

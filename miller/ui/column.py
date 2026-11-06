@@ -10,6 +10,10 @@ and inline rename live in ``column_menu``.
 
 The list selects several rows. A directory monitor reloads the column after
 Nemo finishes a drop, because that work returns before the files move.
+The first listing is asynchronous so opening a column never blocks the GTK
+main loop on large directories, and the column can cancel in-flight work on
+destroy. Later reloads stay synchronous so delete, paste, and rename still see
+the new rows before those methods return.
 """
 
 from __future__ import annotations
@@ -82,7 +86,7 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         ) -> None:
         """Build header, list, keys, and directory monitor for one folder.
 
-        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind #scope/file-ops #type/widget
+        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind #scope/file-ops #type/widget #complexity/high
         """
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.directory_path = os.path.abspath(os.path.expanduser(directory_path))
@@ -132,7 +136,15 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         self._build_list()
         self.connect("key-press-event", self._on_key_press)
         self.connect("destroy", self._on_destroy)
-        self.refresh()
+        # The first listing must not block the GTK thread. Destroy cancels it.
+        self._load_cancellable = None
+        self._loading = False
+        self._after_load: list[Callable[[], None]] = []
+        self._load_idle = 0
+        self._load_generation = 0
+        self._pending_entries: list[FileEntry] = []
+        self._chunk_index = 0
+        self._load_async()
         self._start_directory_monitor()
 
     def delete_selected(self) -> None:
