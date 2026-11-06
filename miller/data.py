@@ -20,6 +20,11 @@ Drag-and-drop copies and moves go through ``org.Nemo.FileOperations`` on
 the session bus. Properties use ``org.freedesktop.FileManager1``. Both
 calls are asynchronous: a synchronous call from inside Nemo's main loop
 deadlocks on Nemo's own bus name.
+
+``show_file_preview`` re-export drives Space-driven nemo-preview from the
+extension and column pass-through path.
+
+@tags: #scope/shared #scope/file-ops #action/read #type/extension
 """
 
 from miller.clipboard import (
@@ -49,6 +54,7 @@ from miller.session import (
     open_file_default,
     open_in_same_window,
     recommended_apps,
+    show_file_preview,
     show_item_properties,
 )
 from miller.nemo_actions import (
@@ -110,6 +116,7 @@ __all__ = [
     "recommended_apps",
     "rename_entry",
     "same_filesystem",
+    "show_file_preview",
     "show_item_properties",
     "transfer_uris",
     "resolve_miller_view_preferred",

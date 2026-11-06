@@ -96,7 +96,10 @@ class ColumnInputMixin:
         and Left / BackSpace, which ask the board to move. BackSpace edits
         the search prefix while one is active, and only then falls through
         to Left. A printable character with no Control or Alt appends to
-        that prefix. An inline rename owns the keyboard until it closes.
+        that prefix. A leading Space does not: the window uses that key
+        for file preview, so the prefix starts only after a real character.
+        Space typed after that prefix is part of the name. An inline rename
+        owns the keyboard until it closes.
 
         Args:
             keyval: GDK key value.
@@ -105,7 +108,7 @@ class ColumnInputMixin:
         Returns:
             True when the key was consumed.
     
-        @tags: #scope/navigation #scope/file-ops #action/bind #action/write #action/clear #scope/widget
+        @tags: #scope/navigation #scope/file-ops #action/bind #action/write #action/clear #scope/widget #type/helper
         """
         if self._rename_active():
             return False
@@ -169,7 +172,7 @@ class ColumnInputMixin:
         commands. Those go through the input method first so a dead key can
         compose.
 
-        @tags: #scope/navigation #action/read #type/helper #scope/widget #side-effect/pure-function
+        @tags: #scope/navigation #scope/file-ops #action/read #type/helper #scope/widget #side-effect/pure-function
         """
         if state is None:
             state = 0
@@ -206,10 +209,12 @@ class ColumnInputMixin:
         """Append one plain character to the column prefix.
 
         Control and Alt stay out so a shortcut is never also a search.
-        ``keyval_to_unicode`` is what tests drive. Composed characters arrive
-        through ``_on_search_commit`` instead.
+        A Space on an empty prefix stays out for the same reason: the
+        window uses that key for file preview, and accepting it would
+        start a search instead. ``keyval_to_unicode`` is what tests drive.
+        Composed characters arrive through ``_on_search_commit`` instead.
 
-        @tags: #scope/navigation #action/write #action/bind #scope/widget #type/helper
+        @tags: #scope/navigation #scope/file-ops #action/write #action/bind #scope/widget #type/helper
         """
         if state is None:
             state = 0
@@ -220,6 +225,8 @@ class ColumnInputMixin:
             return False
         text = chr(code)
         if not text.isprintable():
+            return False
+        if text == " " and not self._search_query:
             return False
         self._set_search_query(self._search_query + text)
         return True
@@ -256,7 +263,11 @@ class ColumnInputMixin:
     def _on_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
         """Route shortcuts, then let a dead key compose before a plain letter.
 
-        @tags: #scope/navigation #scope/widget #action/bind #type/helper
+        A leading Space is left unconsumed so the window can still run
+        another handler or the preview fallback. Consuming it here would
+        hide the key from every parent.
+
+        @tags: #scope/navigation #scope/widget #scope/file-ops #action/bind #type/helper
         """
         if self._rename_active():
             return False
@@ -272,15 +283,56 @@ class ColumnInputMixin:
             return self.handle_key(keyval, state)
         if self._is_command_key(keyval, state):
             return self.handle_key(keyval, state)
+        # A leading Space must not reach the input method. That method
+        # would commit " " and consume the key. The ListBox would then
+        # activate the row. The flag stops that activation without
+        # consuming the event, so it can still bubble to the window.
+        if (
+            keyval in (Gdk.KEY_space, Gdk.KEY_KP_Space)
+            and not (state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK))
+            and not self._search_query
+        ):
+            self._space_passthrough = True
+            toplevel = self.get_toplevel()
+            if isinstance(toplevel, Gtk.Window):
+                toplevel._miller_space_column = self
+            GLib.idle_add(self._clear_space_passthrough)
+            return self.handle_key(keyval, state)
         if self._search_im.filter_keypress(event):
             return True
         return self.handle_key(keyval, state)
 
-    def _on_row_activated(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
-        """_on_row_activated.
+    def _clear_space_passthrough(self) -> bool:
+        """Drop the Space guard after the rest of this event has run.
 
-        @tags: #scope/navigation #action/navigate #scope/widget
+        The flag must not survive into Return or a double-click. Idle
+        runs after GTK finishes dispatching the key. The window class
+        handler consumes Space even when we return False, so the
+        connect_after fallback may not run; if the marker is still
+        ours, run that fallback here.
+
+        @tags: #scope/widget #scope/navigation #scope/file-ops #action/clear #action/bind #action/navigate #type/helper #lifecycle/init
         """
+        self._space_passthrough = False
+        toplevel = self.get_toplevel()
+        preview = getattr(toplevel, "_miller_space_preview", None)
+        if (
+            isinstance(toplevel, Gtk.Window)
+            and getattr(toplevel, "_miller_space_column", None) is self
+            and preview is not None
+        ):
+            preview()
+        return False
+
+    def _on_row_activated(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        """Open the activated row, unless this activation came from Space.
+
+        @tags: #scope/navigation #scope/file-ops #action/navigate #scope/widget #action/bind #action/clear
+        """
+        # Space still reaches this signal through a second path besides
+        # activate-cursor-row. Return and double-click do not set the flag.
+        if getattr(self, "_space_passthrough", False):
+            return
         entry = getattr(row, "file_entry", None)
         if entry is None or self._dead:
             return

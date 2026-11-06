@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 # This process may be on Wayland. Importing Gtk there can block in the
 # display connection. XWayland is selected here, once, before gi loads.
@@ -234,8 +235,11 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             True when Control is held and the key is 1, 2, 3, or 4.
             False for every other event so the focused column still sees it.
 
-        @tags: #scope/view-preference #scope/widget #action/toggle
+        @tags: #scope/view-preference #scope/widget #scope/navigation #scope/file-ops #action/toggle #action/clear #action/bind
         """
+        # A stale Space marker from an earlier key must not fire on this
+        # one. The column sets it again if this press is a leading Space.
+        window._miller_space_column = None
         state = getattr(event, "state", 0) or 0
         # View switching is a window chord. Without Control the key belongs
         # to the focused column.
@@ -258,9 +262,10 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         A new tab is inserted into a ``Gtk.Notebook`` before Nemo loads
         it. ``page-added`` binds that slot so its ``location-changed`` is
         seen on the first load. Slots already in the tree are bound from
-        ``get_widget``.
+        ``get_widget``. The after-handler for Space runs only when nobody
+        consumed the key, including another extension's accelerator.
 
-        @tags: #scope/widget #scope/navigation #action/bind #lifecycle/init
+        @tags: #scope/widget #scope/navigation #scope/file-ops #action/bind #lifecycle/init
         """
         if getattr(window, "_miller_keys_bound", False):
             return
@@ -268,10 +273,54 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             "key-press-event",
             lambda widget, event: self.handle_window_key(widget, event),
         )
+        window.connect_after(
+            "key-press-event",
+            lambda widget, event: self.handle_space_preview(widget, event),
+        )
+        # The window class handler consumes Space, so connect_after may
+        # not run. The column idle calls this if the marker is still set.
+        window._miller_space_preview = lambda: self.handle_space_preview(
+            window, SimpleNamespace(keyval=Gdk.KEY_space, state=0)
+        )
         for widget in self._walk(window):
             if isinstance(widget, Gtk.Notebook):
                 self._bind_notebook(widget)
         window._miller_keys_bound = True
+
+    def handle_space_preview(self, window: Gtk.Window, event) -> bool:
+        """Preview the selected file when a leading Space reached the window.
+
+        Accelerators and other window handlers run first. The column only
+        sets the marker for a leading Space. The window class handler
+        often consumes that key, so connect_after may not fire; the
+        column idle calls this when the marker is still set.
+
+        Args:
+            window: Window that received the event.
+            event: Key event. ``state`` and ``keyval`` are read.
+
+        Returns:
+            False always, so another after-handler can still see the key.
+
+        @tags: #scope/navigation #scope/widget #scope/file-ops #action/bind #action/navigate
+        """
+        column = getattr(window, "_miller_space_column", None)
+        if column is None:
+            return False
+        keyval = getattr(event, "keyval", 0)
+        state = getattr(event, "state", 0) or 0
+        if keyval not in (Gdk.KEY_space, Gdk.KEY_KP_Space):
+            return False
+        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK):
+            return False
+        window._miller_space_column = None
+        if getattr(column, "_dead", False):
+            return False
+        entries = column.get_selected_entries()
+        if not entries:
+            return False
+        data.show_file_preview(entries[0].path, window)
+        return False
 
     def _bind_notebook(self, notebook: Gtk.Notebook) -> None:
         """Bind slots added to ``notebook`` before they load a location.

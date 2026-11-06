@@ -38,6 +38,7 @@ from miller.data import (
     resolve_miller_view_preferred,
     same_filesystem,
     set_miller_view_preferred,
+    show_file_preview,
     show_item_properties,
     transfer_uris,
     trash_entry,
@@ -973,6 +974,54 @@ class DataAndThemeTests(unittest.TestCase):
         self.assertTrue(callable(MenuTarget))
         self.assertTrue(callable(NemoAction))
         self.assertTrue(callable(ScriptNode))
+
+    def test_show_file_preview_builds_uri_and_swallows_bus_errors(self):
+        import io
+        from contextlib import redirect_stdout
+
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+
+        calls = []
+
+        class _Bus:
+            def call(self, *args, **kwargs):
+                calls.append(args)
+
+        original_bus = Gio.bus_get_sync
+        Gio.bus_get_sync = lambda *a, **k: _Bus()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                note = os.path.join(tmp, "note.txt")
+                with open(note, "w", encoding="utf-8") as handle:
+                    handle.write("x")
+                widget = Gtk.Label()
+                show_file_preview(note, widget)
+                self.assertEqual(len(calls), 1)
+                bus_name, object_path, interface, method, variant = calls[0][:5]
+                self.assertEqual(bus_name, "org.nemo.Preview")
+                self.assertEqual(object_path, "/org/nemo/Preview")
+                self.assertEqual(interface, "org.nemo.Preview")
+                self.assertEqual(method, "ShowFile")
+                uri, xid, close_if_shown = variant.unpack()
+                self.assertEqual(uri, Gio.File.new_for_path(note).get_uri())
+                self.assertEqual(xid, 0)
+                self.assertTrue(close_if_shown)
+        finally:
+            Gio.bus_get_sync = original_bus
+
+        class _Boom:
+            def call(self, *args, **kwargs):
+                raise RuntimeError("unknown service")
+
+        Gio.bus_get_sync = lambda *a, **k: _Boom()
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                show_file_preview("/tmp", Gtk.Label())
+            self.assertIn("[miller]", buffer.getvalue())
+        finally:
+            Gio.bus_get_sync = original_bus
 
     def test_name_has_owner_queries_the_given_name(self):
         calls = []

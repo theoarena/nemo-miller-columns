@@ -16,6 +16,12 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk
 
+try:
+    gi.require_version("GdkX11", "3.0")
+    from gi.repository import GdkX11
+except (ValueError, ImportError):
+    GdkX11 = None
+
 from miller.listing import _gio_file, _local_path
 from miller.transfer import _on_nemo_file_operation
 
@@ -73,6 +79,63 @@ def open_file_default(path_or_uri: str) -> None:
     except Exception as error:
         print(f"[miller] Failed to open {path_or_uri}: {error}")
 
+
+def _preview_xid(widget: Gtk.Widget) -> int:
+    """Return the X11 id of ``widget``'s toplevel, or zero.
+
+    nemo-preview uses that id as the transient parent. A Wayland window
+    is not a ``GdkX11.X11Window``, and passing a fake xid makes it error.
+
+    @tags: #scope/widget #scope/navigation #action/read #type/helper #complexity/high
+    """
+    if widget is None:
+        return 0
+    try:
+        toplevel = widget.get_toplevel()
+        gdk_window = toplevel.get_window() if isinstance(toplevel, Gtk.Window) else None
+        if gdk_window is None:
+            return 0
+        if GdkX11 is not None and isinstance(gdk_window, GdkX11.X11Window):
+            return int(GdkX11.X11Window.get_xid(gdk_window))
+    except Exception:
+        return 0
+    return 0
+
+
+def show_file_preview(path_or_uri: str, widget: Gtk.Widget = None) -> None:
+    """Ask ``org.nemo.Preview`` to show ``path_or_uri``.
+
+    This is the same D-Bus method Nemo's icon and list views use. The
+    call is async: a missing previewer or a bus error is logged and
+    ignored, so Space does nothing visible when the service is absent.
+    ``closeIfShown`` is true, matching Nemo's toggle.
+
+    Args:
+        path_or_uri: File path or URI.
+        widget: Widget whose toplevel supplies the X11 xid. Zero when
+            the window is not an X11 window.
+
+    @tags: #scope/navigation #scope/file-ops #action/navigate #type/helper
+    """
+    try:
+        uri = _gio_file(path_or_uri).get_uri()
+        xid = _preview_xid(widget)
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.call(
+            "org.nemo.Preview",
+            "/org/nemo/Preview",
+            "org.nemo.Preview",
+            "ShowFile",
+            GLib.Variant("(sib)", (uri, xid, True)),
+            None,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+            _on_nemo_file_operation,
+            "ShowFile",
+        )
+    except Exception as error:
+        print(f"[miller] {error}")
 
 
 def recommended_apps(content_types: list[str]) -> list[Gio.AppInfo]:

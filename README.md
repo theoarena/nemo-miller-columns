@@ -44,6 +44,7 @@ Use the toolbar button or press Ctrl+4.
 ### Search
 
 Type in a column to filter files and folders. Matching ignores case.
+A leading Space is left to Nemo and the previewer; Space after a typed prefix is part of the search.
 
 ![Miller columns in Nemo: a chain of folders and a preview of the selected file](search-preview.png)
 

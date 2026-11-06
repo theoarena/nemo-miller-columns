@@ -338,6 +338,7 @@ class ColumnListMixin:
         self.listbox.set_vexpand(True)
         self.listbox.connect("selected-rows-changed", self._on_selected_rows_changed)
         self.listbox.connect("row-activated", self._on_row_activated)
+        self.listbox.connect("activate-cursor-row", self._on_activate_cursor_row)
         self.listbox.connect("key-press-event", self._on_key_press)
         self.listbox.connect("button-press-event", self._on_button_press)
         self.listbox.connect("button-release-event", self._on_button_release)
@@ -382,6 +383,18 @@ class ColumnListMixin:
         overlay.add_overlay(self.search_chip)
         self.pack_start(overlay, True, True, 0)
         attach_drag_and_drop(self)
+
+    def _on_activate_cursor_row(self, listbox: Gtk.ListBox) -> None:
+        """Stop Space from activating the row so the key can still bubble.
+
+        ListBox maps Space onto this signal. Returning True from key-press
+        would swallow the event; stopping only this emission leaves Return
+        and double-click on the normal open path.
+
+        @tags: #scope/widget #scope/navigation #scope/file-ops #action/bind #action/clear #type/helper
+        """
+        if getattr(self, "_space_passthrough", False):
+            listbox.stop_emission_by_name("activate-cursor-row")
 
     def _name_matches(self, name: str) -> bool:
         """Return whether ``name`` passes the column prefix.

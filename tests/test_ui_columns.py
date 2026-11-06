@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
@@ -237,6 +238,36 @@ def _click_row(column, row):
     pump()
     column.listbox.select_row(row)
     column.listbox.emit("button-release-event", _button_event(column, row, Gdk.EventType.BUTTON_RELEASE))
+    pump()
+
+
+
+def _dispatch_key(toplevel, keyval, state=0):
+    """Send a real key through GTK with a keyboard device.
+
+    Direct handler calls never reach ListBox's Space binding. This is
+    the same path the verification probe used.
+    """
+    display = Gdk.Display.get_default()
+    seat = display.get_default_seat() if display is not None else None
+    device = seat.get_keyboard() if seat is not None else None
+    if device is None:
+        raise unittest.SkipTest("no keyboard device")
+    gdk_window = toplevel.get_window()
+    if gdk_window is None:
+        raise unittest.SkipTest("window is not realized")
+    event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+    event.window = gdk_window
+    event.send_event = True
+    event.keyval = keyval
+    event.state = state
+    event.time = Gdk.CURRENT_TIME
+    keymap = Gdk.Keymap.get_for_display(display)
+    found, keys = keymap.get_entries_for_keyval(keyval)
+    if found and keys:
+        event.hardware_keycode = keys[0].keycode
+    event.set_device(device)
+    Gtk.main_do_event(event)
     pump()
 
 
@@ -1889,6 +1920,91 @@ class MillerColumnsUiTests(unittest.TestCase):
             self.assertEqual(_visible_names(column), [])
             self.assertTrue(column._owns_focus())
             self.assertFalse(column.search_label.get_can_focus())
+
+    def test_leading_space_does_not_start_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a b.txt", "ab.txt", "other.txt"):
+                with open(os.path.join(tmp, name), "w", encoding="utf-8") as handle:
+                    handle.write("x")
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            view.focus_active_column()
+
+            self.assertFalse(column.handle_key(Gdk.KEY_space))
+            self.assertEqual(column._search_query, "")
+            self.assertFalse(column.search_label.get_visible())
+            self.assertEqual(sorted(_visible_names(column)), sorted(_entry_names(column)))
+
+            for keyval in (Gdk.KEY_space, Gdk.KEY_KP_Space):
+                event = SimpleNamespace(keyval=keyval, state=0)
+                self.assertFalse(column._on_key_press(column, event))
+                self.assertEqual(column._search_query, "")
+                self.assertFalse(column.search_label.get_visible())
+
+            self.assertTrue(column.handle_key(Gdk.KEY_a))
+            self.assertTrue(column.handle_key(Gdk.KEY_space))
+            self.assertEqual(column._search_query, "a ")
+            self.assertEqual(column.search_label.get_text(), "a ")
+            self.assertEqual(_visible_names(column), ["a b.txt"])
+
+            column.handle_key(Gdk.KEY_BackSpace)
+            column.handle_key(Gdk.KEY_BackSpace)
+            self.assertEqual(column._search_query, "")
+            self.assertFalse(column.handle_key(Gdk.KEY_space))
+            self.assertEqual(column._search_query, "")
+
+
+    def test_leading_space_does_not_open_and_still_bubbles(self):
+        opened = []
+        original = column_module.open_file_default
+        column_module.open_file_default = lambda path: opened.append(path)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                note = os.path.join(tmp, "note.txt")
+                with open(note, "w", encoding="utf-8") as handle:
+                    handle.write("open-me")
+                with open(os.path.join(tmp, "a b.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("x")
+                view = self.mount(MillerColumnsView(tmp))
+                column = view.columns[0]
+                self.window.present()
+                view.focus_active_column()
+                column.select_name("note.txt")
+                column.focus_row()
+                pump()
+
+                bubbled = []
+                view.connect(
+                    "key-press-event",
+                    lambda _widget, event: bubbled.append(event.keyval) or False,
+                )
+
+                _dispatch_key(self.window, Gdk.KEY_space)
+                self.assertEqual(opened, [])
+                self.assertEqual(column._search_query, "")
+                self.assertIn(Gdk.KEY_space, bubbled)
+
+                opened.clear()
+                _dispatch_key(self.window, Gdk.KEY_Return)
+                self.assertEqual(opened, [os.path.abspath(note)])
+
+                opened.clear()
+                column.handle_key(Gdk.KEY_a)
+                bubbled.clear()
+                _dispatch_key(self.window, Gdk.KEY_space)
+                self.assertEqual(column._search_query, "a ")
+                self.assertEqual(opened, [])
+                self.assertNotIn(Gdk.KEY_space, bubbled)
+
+                column.handle_key(Gdk.KEY_Escape)
+                column.select_name("note.txt")
+                column.file_click_policy = None
+                _click_row(column, _row_named(column, "note.txt"))
+                self.assertEqual(opened, [])
+                column._on_row_activated(column.listbox, _row_named(column, "note.txt"))
+                self.assertEqual(opened, [os.path.abspath(note)])
+        finally:
+            column_module.open_file_default = original
 
     def test_search_ignores_shortcuts_rename_and_keeps_refresh(self):
         with tempfile.TemporaryDirectory() as tmp:

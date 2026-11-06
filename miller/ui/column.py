@@ -63,8 +63,11 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
             ``None`` matches ``"double"``: a file click selects and previews,
             and the second click opens. ``"single"`` opens the file on the
             first release. Folders always open a column on one click.
+        _space_passthrough: True only while a leading Space is still being
+            dispatched; suppresses ListBox row activation so the key can
+            reach the window for nemo-preview.
 
-    @tags: #scope/widget #scope/view-preference #type/widget
+    @tags: #scope/widget #scope/view-preference #scope/navigation #scope/file-ops #type/widget #action/bind
     """
 
 
@@ -79,7 +82,7 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         ) -> None:
         """Build header, list, keys, and directory monitor for one folder.
 
-        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind #scope/file-ops
+        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind #scope/file-ops #type/widget
         """
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.directory_path = os.path.abspath(os.path.expanduser(directory_path))
@@ -112,6 +115,9 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         self._monitor_deferred = False
         # Typed prefix for this column only. Empty lists the whole directory.
         self._search_query = ""
+        # True only while a leading Space is still being dispatched. The
+        # ListBox maps that key to row activation; the guard reads this.
+        self._space_passthrough = False
 
         self.get_style_context().add_class("mc-column")
         self.set_size_request(_COLUMN_WIDTH, -1)

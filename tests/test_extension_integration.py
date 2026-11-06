@@ -110,6 +110,32 @@ def _control_key(keyval):
     return SimpleNamespace(keyval=keyval, state=Gdk.ModifierType.CONTROL_MASK)
 
 
+
+def _dispatch_key(toplevel, keyval, state=0):
+    """Send a real key through GTK with a keyboard device."""
+    display = Gdk.Display.get_default()
+    seat = display.get_default_seat() if display is not None else None
+    device = seat.get_keyboard() if seat is not None else None
+    if device is None:
+        raise unittest.SkipTest("no keyboard device")
+    gdk_window = toplevel.get_window()
+    if gdk_window is None:
+        raise unittest.SkipTest("window is not realized")
+    event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+    event.window = gdk_window
+    event.send_event = True
+    event.keyval = keyval
+    event.state = state
+    event.time = Gdk.CURRENT_TIME
+    keymap = Gdk.Keymap.get_for_display(display)
+    found, keys = keymap.get_entries_for_keyval(keyval)
+    if found and keys:
+        event.hardware_keycode = keys[0].keycode
+    event.set_device(device)
+    Gtk.main_do_event(event)
+    pump()
+
+
 class ExtensionIntegrationTests(unittest.TestCase):
     """Slot packing, toolbar, keys, and in-window navigation."""
 
@@ -874,6 +900,103 @@ class ExtensionIntegrationTests(unittest.TestCase):
         view.flush_selection()
         self.assertTrue(column.handle_key(Gdk.KEY_Right))
 
+
+
+    def _stub_preview(self):
+        calls = []
+        original = data.show_file_preview
+
+        def record(path, widget=None):
+            calls.append((path, widget))
+
+        data.show_file_preview = record
+        self.addCleanup(lambda: setattr(data, "show_file_preview", original))
+        return calls
+
+    def _open_file_column(self, folder_name):
+        folder = self._make_dir(folder_name)
+        self._touch(folder)
+        data.set_miller_view_preferred(folder, True)
+        self._open(self.slot, folder)
+        view = self.slot._miller_view
+        column = view.columns[0]
+        self.window.present()
+        pump()
+        return folder, view, column
+
+    def test_leading_space_previews_selected_file(self):
+        calls = self._stub_preview()
+        folder, view, column = self._open_file_column("space-preview")
+        note = os.path.join(folder, "note.txt")
+        column.select_name("note.txt")
+        view.focus_active_column()
+        pump()
+        _dispatch_key(self.window, Gdk.KEY_space)
+        self.assertEqual(calls, [(os.path.abspath(note), self.window)])
+
+    def test_competing_space_handler_skips_preview(self):
+        calls = self._stub_preview()
+        folder, view, column = self._open_file_column("space-steal")
+        column.select_name("note.txt")
+        view.focus_active_column()
+        pump()
+
+        def steal(_widget, event):
+            if event.keyval in (Gdk.KEY_space, Gdk.KEY_KP_Space):
+                return True
+            return False
+
+        self.window.connect("key-press-event", steal)
+        _dispatch_key(self.window, Gdk.KEY_space)
+        self.assertEqual(calls, [])
+
+    def test_space_without_selection_does_not_preview(self):
+        calls = self._stub_preview()
+        _folder, view, column = self._open_file_column("space-empty")
+        view.focus_active_column()
+        pump()
+        self.assertEqual(column.get_selected_entries(), [])
+        _dispatch_key(self.window, Gdk.KEY_space)
+        self.assertEqual(calls, [])
+
+    def test_ctrl_and_alt_space_do_not_preview(self):
+        calls = self._stub_preview()
+        _folder, view, column = self._open_file_column("space-mods")
+        column.select_name("note.txt")
+        view.focus_active_column()
+        pump()
+        _dispatch_key(self.window, Gdk.KEY_space, Gdk.ModifierType.CONTROL_MASK)
+        _dispatch_key(self.window, Gdk.KEY_space, Gdk.ModifierType.MOD1_MASK)
+        self.assertEqual(calls, [])
+
+    def test_space_outside_column_does_not_preview(self):
+        calls = self._stub_preview()
+        _folder, view, column = self._open_file_column("space-outside")
+        column.select_name("note.txt")
+        entry = None
+        for widget in self.ext._walk(self.window):
+            if isinstance(widget, Gtk.Entry):
+                entry = widget
+                break
+        self.assertIsNotNone(entry)
+        entry.grab_focus()
+        pump()
+        _dispatch_key(self.window, Gdk.KEY_space)
+        self.assertEqual(calls, [])
+
+    def test_stale_space_marker_does_not_preview_on_next_key(self):
+        calls = self._stub_preview()
+        _folder, view, column = self._open_file_column("space-stale")
+        column.select_name("note.txt")
+        self.window._miller_space_column = column
+        self.ext.handle_window_key(
+            self.window, SimpleNamespace(keyval=Gdk.KEY_x, state=0)
+        )
+        self.ext.handle_space_preview(
+            self.window, SimpleNamespace(keyval=Gdk.KEY_x, state=0)
+        )
+        self.assertEqual(calls, [])
+        self.assertIsNone(self.window._miller_space_column)
 
 class InstallScriptTests(unittest.TestCase):
     """install.sh links the extension and removes only that symlink."""
