@@ -231,7 +231,7 @@ def _file_info(name: str, file_type: Gio.FileType) -> Gio.FileInfo:
 
 class DataAndThemeTests(unittest.TestCase):
     def test_package_exports(self):
-        self.assertEqual(miller.__version__, "0.1.0")
+        self.assertEqual(miller.__version__, "1.0.0")
         self.assertEqual(miller.METADATA_KEY, METADATA_KEY)
         self.assertEqual(miller.METADATA_KEY, "metadata::nemo-miller-columns-view")
         self.assertEqual(miller.RESERVED_VIEW_KEY, RESERVED_VIEW_KEY)

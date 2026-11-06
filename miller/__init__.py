@@ -10,6 +10,6 @@ widgets or touch the user's view settings.
 
 from .data import METADATA_KEY, RESERVED_VIEW_KEY
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = ["METADATA_KEY", "RESERVED_VIEW_KEY", "__version__"]
