@@ -1,0 +1,117 @@
+# Portuguese translations for miller.
+# msgid is English. pt_BR resolves to this file.
+msgid ""
+msgstr ""
+"Project-Id-Version: miller 0.1.0\n"
+"Language: pt\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "%d item"
+msgid_plural "%d items"
+msgstr[0] "%d item"
+msgstr[1] "%d itens"
+
+msgid "%d item selected"
+msgid_plural "%d items selected"
+msgstr[0] "%d item selecionado"
+msgstr[1] "%d itens selecionados"
+
+msgid "%d folder"
+msgid_plural "%d folders"
+msgstr[0] "%d pasta"
+msgstr[1] "%d pastas"
+
+msgid "%d file"
+msgid_plural "%d files"
+msgstr[0] "%d arquivo"
+msgstr[1] "%d arquivos"
+
+msgid "Empty folder"
+msgstr "Pasta vazia"
+
+msgid "New Folder"
+msgstr "Nova Pasta"
+
+msgid "Open"
+msgstr "Abrir"
+
+msgid "Open With"
+msgstr "Abrir com"
+
+msgid "Open in New Tab"
+msgstr "Abrir em nova aba"
+
+msgid "Open in New Window"
+msgstr "Abrir em nova janela"
+
+msgid "Cut"
+msgstr "Cortar"
+
+msgid "Copy"
+msgstr "Copiar"
+
+msgid "Paste"
+msgstr "Colar"
+
+msgid "Rename…"
+msgstr "Renomear…"
+
+msgid "Move to Trash"
+msgstr "Mover para a Lixeira"
+
+msgid "Copy Path"
+msgstr "Copiar Caminho"
+
+msgid "Properties"
+msgstr "Propriedades"
+
+msgid "Scripts"
+msgstr "Scripts"
+
+msgid "Other Application…"
+msgstr "Outro aplicativo…"
+
+msgid "Move Here"
+msgstr "Mover aqui"
+
+msgid "Copy Here"
+msgstr "Copiar aqui"
+
+msgid "Link Here"
+msgstr "Criar link aqui"
+
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgid "INFORMATION"
+msgstr "INFORMAÇÕES"
+
+msgid "Type"
+msgstr "Tipo"
+
+msgid "Size"
+msgstr "Tamanho"
+
+msgid "Created"
+msgstr "Criado"
+
+msgid "Modified"
+msgstr "Modificado"
+
+msgid "Last access"
+msgstr "Último acesso"
+
+msgid "Permissions"
+msgstr "Permissões"
+
+msgid "Path"
+msgstr "Caminho"
+
+msgid "No file selected"
+msgstr "Nenhum arquivo selecionado"
+
+msgid "Miller Columns (Ctrl+4)"
+msgstr "Miller Columns (Ctrl+4)"
