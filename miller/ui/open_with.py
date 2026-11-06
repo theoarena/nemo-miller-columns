@@ -15,12 +15,9 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gio, Gtk
 
+from miller.config import MENU_ICON_SIZE
 from miller.data import launch_with_app, recommended_apps
 from miller.i18n import _
-
-# Match column row icons so large FileIcon apps do not blow up the menu.
-# @tags: #type/constant #scope/widget #scope/view-preference
-_MENU_ICON_SIZE = 16
 
 
 def open_with_menu_item(column) -> Gtk.MenuItem:
@@ -134,7 +131,7 @@ def _app_item(app, paths: list[str]) -> Gtk.MenuItem:
     The label property stays set after the child is replaced, so callers
     can still read ``get_label``.
 
-    @tags: #scope/widget #action/render #scope/file-ops #type/helper
+    @tags: #scope/widget #action/render #scope/file-ops #type/helper #format/int #scope/shared
     """
     name = app.get_display_name() or app.get_name() or app.get_id() or ""
     item = Gtk.MenuItem(label=name)
@@ -147,7 +144,7 @@ def _app_item(app, paths: list[str]) -> Gtk.MenuItem:
         image = Gtk.Image.new_from_gicon(icon, Gtk.IconSize.MENU)
     else:
         image = Gtk.Image.new_from_icon_name("application-x-executable-symbolic", Gtk.IconSize.MENU)
-    image.set_pixel_size(_MENU_ICON_SIZE)
+    image.set_pixel_size(MENU_ICON_SIZE)
     box.pack_start(image, False, False, 0)
     box.pack_start(Gtk.Label(label=name), False, False, 0)
     item.add(box)

@@ -11,7 +11,7 @@ paints. Other code may read ``_miller_active`` and skip its own ``show()``
 when the slot is already marked.
 
 Arrow keys move the board immediately. Nemo is asked to follow once, after
-``_NAVIGATE_DELAY_MS`` of quiet, and only while that slot is the active tab.
+``NAVIGATE_DELAY_MS`` of quiet, and only while that slot is the active tab.
 The ``get_widget`` call that comes back from that request is an echo and
 does not move the board.
 
@@ -55,6 +55,10 @@ import miller.data as data
 from miller.i18n import _, install
 from miller.ui.board import MillerColumnsView
 from miller.ui.column import MillerColumn
+# Milliseconds of quiet before the host asks Nemo to follow the board path.
+#
+# @tags: #type/constant #format/int #scope/navigation #scope/shared #action/read
+from miller.config import NAVIGATE_DELAY_MS
 
 # Frozen toolbar copy. Screen readers get this as the button name.
 _TOOLTIP = "Miller Columns (Ctrl+4)"
@@ -82,11 +86,6 @@ _DISABLE_KEYS = frozenset({
     Gdk.KEY_3,
     Gdk.KEY_KP_3,
 })
-
-# Key repeat would otherwise ask Nemo to open every folder the highlight
-# passes through. The board moves on the key; Nemo follows after a pause.
-# @tags: #type/constant #scope/navigation
-_NAVIGATE_DELAY_MS = 150
 
 
 def _hide_overlay_later(overlay: Gtk.Overlay) -> bool:
@@ -549,7 +548,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         """Restart the navigation timer for ``path`` on ``slot``.
 
         Each arrow replaces the previous target. Nemo hears only the
-        directory that is still current when ``_NAVIGATE_DELAY_MS``
+        directory that is still current when ``NAVIGATE_DELAY_MS``
         elapses. A background slot keeps the target and does not start
         a timer: ``open_in_same_window`` would move the visible tab.
 
@@ -561,7 +560,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         if isinstance(window, Gtk.Window) and slot is not self._active_slot(window):
             return
         slot._miller_nav_source = GLib.timeout_add(
-            _NAVIGATE_DELAY_MS,
+            NAVIGATE_DELAY_MS,
             self.flush_navigation,
             slot,
         )
@@ -570,7 +569,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         """Send the pending directory to Nemo, if it is not already there.
 
         Mirrors ``MillerColumnsView.flush_selection``: tests and deactivate
-        call this instead of waiting out ``_NAVIGATE_DELAY_MS``. A target
+        call this instead of waiting out ``NAVIGATE_DELAY_MS``. A target
         equal to ``_miller_location`` is dropped. That is Right and then
         Left back to the folder Nemo already shows.
 
@@ -973,7 +972,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         the slot's ``_miller_uri`` and must not navigate. A later directory
         is stored on the slot at once, so the toolbar and keys act on the
         folder the user sees while this slot is active. Nemo is asked
-        after ``_NAVIGATE_DELAY_MS``.
+        after ``NAVIGATE_DELAY_MS``.
 
         @tags: #scope/navigation #action/navigate
         """

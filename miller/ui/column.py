@@ -33,6 +33,7 @@ from gi.repository import Gtk
 # ``copy_to_clipboard``, ``open_file_default`` and ``show_item_properties``
 # stay bound here: UI tests replace them, and the mixins read this module
 # back at call time.
+from miller.config import COLUMN_WIDTH
 from miller.data import (
     FileEntry,
     copy_to_clipboard,
@@ -50,10 +51,6 @@ from miller.ui.column_menu import BACKGROUND_MENU_LABELS, CONTEXT_MENU_LABELS, C
 # Background menu labels are re-exported for tests and host integrations.
 # @tags: #type/constant #scope/widget
 __all__ = ["BACKGROUND_MENU_LABELS", "CONTEXT_MENU_LABELS", "MillerColumn"]
-
-# About one icon column of a file manager. The stylesheet floor is 220;
-# the request keeps a new column from opening at the label's natural width.
-_COLUMN_WIDTH = 240
 
 
 class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
@@ -90,7 +87,7 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         ) -> None:
         """Build header, list, keys, and directory monitor for one folder.
 
-        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind #scope/file-ops #type/widget #complexity/high
+        @tags: #lifecycle/init #scope/widget #scope/navigation #action/bind #scope/file-ops #type/widget #complexity/high #format/int #scope/shared #action/render
         """
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.directory_path = os.path.abspath(os.path.expanduser(directory_path))
@@ -133,7 +130,7 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         self._pending_paste_name: str | None = None
 
         self.get_style_context().add_class("mc-column")
-        self.set_size_request(_COLUMN_WIDTH, -1)
+        self.set_size_request(COLUMN_WIDTH, -1)
         self.set_hexpand(False)
         self.set_vexpand(True)
         self.set_valign(Gtk.Align.FILL)

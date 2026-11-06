@@ -34,9 +34,7 @@ try:
 except (ValueError, ImportError):
     GdkX11 = None
 
-# Match column row icons and miller.ui.open_with.
-# @tags: #type/constant #scope/widget
-_MENU_ICON_SIZE = 16
+from miller.config import MENU_ICON_SIZE
 
 
 def action_items(column, target: MenuTarget) -> list[Gtk.MenuItem]:
@@ -121,14 +119,14 @@ def extension_menu_items(column, target: MenuTarget, background: bool) -> list[G
 def _pack_icon(item: Gtk.MenuItem, icon_name: str, label: str) -> None:
     """Put a 16px icon beside the label, matching Open With.
 
-    @tags: #scope/widget #action/render #type/helper
+    @tags: #scope/widget #action/render #type/helper #format/int #scope/shared
     """
     child = item.get_child()
     if child is not None:
         item.remove(child)
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
     image = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU)
-    image.set_pixel_size(_MENU_ICON_SIZE)
+    image.set_pixel_size(MENU_ICON_SIZE)
     box.pack_start(image, False, False, 0)
     name = Gtk.Label(label=label, use_underline=True)
     name.set_xalign(0)

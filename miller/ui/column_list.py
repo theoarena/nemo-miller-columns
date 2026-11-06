@@ -21,12 +21,17 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gio, GLib, Gtk, Pango
 
+from miller.config import (
+    EMBLEM_ICON_SIZE,
+    MONITOR_DEBOUNCE_MS,
+    ROW_BUILD_CHUNK,
+    ROW_BUILD_INTERVAL_MS,
+    ROW_ICON_SIZE,
+)
 from miller.data import FileEntry, list_directory, list_directory_async
 from miller.i18n import _, ngettext
 from miller.ui.dnd import attach_drag_and_drop
 
-_ROW_ICON_SIZE = 16
-_EMBLEM_ICON_SIZE = 8
 # Nemo draws the first emblem at the bottom-right, then the other corners.
 _EMBLEM_CORNERS = (
     (Gtk.Align.END, Gtk.Align.END),
@@ -34,17 +39,6 @@ _EMBLEM_CORNERS = (
     (Gtk.Align.START, Gtk.Align.START),
     (Gtk.Align.END, Gtk.Align.START),
 )
-# Nemo finishes a drop after we return. Wait for the directory event to settle.
-_MONITOR_DEBOUNCE_MS = 200
-# Widget construction stays on the GTK thread. A slice this size is short
-# enough that a key can cancel the column before the next one starts.
-# @tags: #type/constant #scope/widget #format/int
-_ROW_BUILD_CHUNK = 40
-# An idle that returns true is always ready, so the main loop never polls:
-# the frame clock does not paint and the key sits in the socket until every
-# row exists. A timeout lets that poll happen between slices.
-# @tags: #type/constant #scope/widget #format/int
-_ROW_BUILD_INTERVAL_MS = 16
 
 
 def _item_count_label(count: int) -> str:
@@ -73,7 +67,7 @@ def _directory_row_icon(entry: FileEntry) -> Gtk.Widget:
     paints the colored file when Nemo stored one, otherwise the filled
     theme folder. Emblems are drawn on top only when the directory has any.
 
-    @tags: #scope/widget #action/render #type/helper #scope/file-ops
+    @tags: #scope/widget #action/render #type/helper #scope/file-ops #format/int #scope/shared
     """
     image = Gtk.Image()
     if entry.icon_file:
@@ -88,12 +82,12 @@ def _directory_row_icon(entry: FileEntry) -> Gtk.Widget:
             Gio.ThemedIcon.new_from_names(list(entry.folder_icon_names or ("folder",))),
             Gtk.IconSize.MENU,
         )
-    image.set_pixel_size(_ROW_ICON_SIZE)
+    image.set_pixel_size(ROW_ICON_SIZE)
     badges = _emblem_badges(entry.emblems)
     if not badges:
         return image
     overlay = Gtk.Overlay()
-    overlay.set_size_request(_ROW_ICON_SIZE, _ROW_ICON_SIZE)
+    overlay.set_size_request(ROW_ICON_SIZE, ROW_ICON_SIZE)
     overlay.add(image)
     for badge in badges:
         overlay.add_overlay(badge)
@@ -103,7 +97,7 @@ def _directory_row_icon(entry: FileEntry) -> Gtk.Widget:
 def _emblem_badges(names: tuple[str, ...]) -> list[Gtk.Image]:
     """Up to four corner badges. A name missing from the theme is skipped.
 
-    @tags: #scope/widget #action/render #action/read #type/helper #scope/file-ops
+    @tags: #scope/widget #action/render #action/read #type/helper #scope/file-ops #format/int #scope/shared
     """
     theme = Gtk.IconTheme.get_default()
     if theme is None:
@@ -118,7 +112,7 @@ def _emblem_badges(names: tuple[str, ...]) -> list[Gtk.Image]:
         except StopIteration:
             break
         badge = Gtk.Image.new_from_icon_name(name, Gtk.IconSize.MENU)
-        badge.set_pixel_size(_EMBLEM_ICON_SIZE)
+        badge.set_pixel_size(EMBLEM_ICON_SIZE)
         badge.set_halign(halign)
         badge.set_valign(valign)
         badges.append(badge)
@@ -371,7 +365,7 @@ class ColumnListMixin:
     def _build_list(self) -> None:
         """_build_list.
 
-        @tags: #scope/widget #action/render
+        @tags: #scope/widget #action/render #format/int #scope/shared #lifecycle/init
         """
         self.listbox = Gtk.ListBox()
         self.listbox.get_style_context().add_class("mc-list")
@@ -401,7 +395,7 @@ class ColumnListMixin:
         self.search_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.search_label.set_max_width_chars(24)
         search_icon = Gtk.Image.new_from_icon_name("edit-find-symbolic", Gtk.IconSize.MENU)
-        search_icon.set_pixel_size(_ROW_ICON_SIZE)
+        search_icon.set_pixel_size(ROW_ICON_SIZE)
         search_icon.set_valign(Gtk.Align.CENTER)
         search_icon.get_style_context().add_class("mc-column-search-icon")
         self.search_chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -589,7 +583,7 @@ class ColumnListMixin:
     def _make_row(self, entry: FileEntry) -> Gtk.ListBoxRow:
         """_make_row.
 
-        @tags: #scope/widget #action/render #scope/file-ops
+        @tags: #scope/widget #action/render #scope/file-ops #format/int #scope/shared
         """
         row = Gtk.ListBoxRow()
         row.get_style_context().add_class("mc-row")
@@ -606,7 +600,7 @@ class ColumnListMixin:
                 entry.icon_name or "text-x-generic-symbolic",
                 Gtk.IconSize.MENU,
             )
-            icon.set_pixel_size(_ROW_ICON_SIZE)
+            icon.set_pixel_size(ROW_ICON_SIZE)
         name = Gtk.Label(label=entry.name)
         name.set_halign(Gtk.Align.START)
         name.set_hexpand(True)
@@ -619,7 +613,7 @@ class ColumnListMixin:
         box.pack_start(name, True, True, 0)
         if entry.is_dir:
             chevron = Gtk.Image.new_from_icon_name("pan-end-symbolic", Gtk.IconSize.MENU)
-            chevron.set_pixel_size(_ROW_ICON_SIZE)
+            chevron.set_pixel_size(ROW_ICON_SIZE)
             chevron.get_style_context().add_class("mc-chevron")
             box.pack_end(chevron, False, False, 0)
         row.add(box)
@@ -812,7 +806,7 @@ class ColumnListMixin:
         rows on a timeout: the main loop has to poll between slices or the
         frame clock never paints and a key never arrives.
 
-        @tags: #scope/widget #action/render #scope/file-ops #complexity/high
+        @tags: #scope/widget #action/render #scope/file-ops #complexity/high #format/int #scope/shared #action/bind #complexity/idle
         """
         if self._dead or not self._loading:
             return
@@ -823,18 +817,18 @@ class ColumnListMixin:
             self.listbox.add(self._make_empty_row())
             self._finish_load()
             return
-        if len(entries) <= _ROW_BUILD_CHUNK:
+        if len(entries) <= ROW_BUILD_CHUNK:
             self._clear_list_rows()
             self._add_row_slice()
             self._pending_entries = []
             self._finish_load()
             return
-        self._load_idle = GLib.timeout_add(_ROW_BUILD_INTERVAL_MS, self._add_row_chunk)
+        self._load_idle = GLib.timeout_add(ROW_BUILD_INTERVAL_MS, self._add_row_chunk)
 
     def _add_row_chunk(self) -> bool:
         """Add the next slice of rows. Returning true keeps the idle source.
 
-        @tags: #scope/widget #action/render #scope/file-ops #lifecycle/destroy
+        @tags: #scope/widget #action/render #scope/file-ops #lifecycle/destroy #format/int #scope/shared #action/bind #complexity/idle
         """
         if (
             self._dead
@@ -857,12 +851,12 @@ class ColumnListMixin:
         return False
 
     def _add_row_slice(self) -> None:
-        """Append up to ``_ROW_BUILD_CHUNK`` rows from the pending listing.
+        """Append up to ``ROW_BUILD_CHUNK`` rows from the pending listing.
 
-        @tags: #scope/widget #action/render #scope/file-ops #type/helper
+        @tags: #scope/widget #action/render #scope/file-ops #type/helper #format/int #scope/shared
         """
         entries = self._pending_entries
-        end = min(self._chunk_index + _ROW_BUILD_CHUNK, len(entries))
+        end = min(self._chunk_index + ROW_BUILD_CHUNK, len(entries))
         for entry in entries[self._chunk_index:end]:
             row = self._make_row(entry)
             self.listbox.add(row)
@@ -1031,13 +1025,13 @@ class ColumnListMixin:
     def _schedule_directory_reload(self) -> None:
         """Schedule a selection-preserving reload after the debounce.
 
-        @tags: #scope/file-ops #action/bind #type/helper
+        @tags: #scope/file-ops #action/bind #type/helper #format/int #scope/shared #side-effect/filesystem
         """
         if self._dead:
             return
         if self._monitor_source:
             GLib.source_remove(self._monitor_source)
-        self._monitor_source = GLib.timeout_add(_MONITOR_DEBOUNCE_MS, self._on_monitor_timeout)
+        self._monitor_source = GLib.timeout_add(MONITOR_DEBOUNCE_MS, self._on_monitor_timeout)
 
     def _on_monitor_timeout(self) -> bool:
         """Run the debounced reload unless a rename entry is open.

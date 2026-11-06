@@ -23,22 +23,19 @@ gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
+from miller.config import (
+    CAPTION_WIDTH,
+    IMAGE_CORNER_RADIUS,
+    IMAGE_FIT_HEIGHT,
+    IMAGE_FIT_WIDTH,
+    LARGE_ICON,
+    PREVIEW_CONTENT_MARGIN,
+    PREVIEW_CONTENT_WIDTH,
+    TILE_SIZE,
+)
 from miller.data import format_size, get_file_metadata
 from miller.i18n import _, ngettext
 
-# The summary does not grow with the pane. 360 is wide enough for a 320px
-# image and a caption column without the path pushing the columns aside.
-# @tags: #type/constant #scope/widget
-_PREVIEW_CONTENT_WIDTH = 360
-_PREVIEW_CONTENT_MARGIN = 24
-_IMAGE_FIT_WIDTH = 320
-_IMAGE_FIT_HEIGHT = 240
-# Same curve as `.mc-preview-image` border-radius. GTK does not mask the
-# image child to that radius, so the pixbuf is clipped to match the shadow.
-# @tags: #type/constant #scope/widget
-_IMAGE_CORNER_RADIUS = 12
-_TILE_SIZE = 160
-_LARGE_ICON = 96
 # Below this alpha-weighted saturation the icon is a grey glyph. A tint
 # sampled from it would be mud, so the tile uses the theme accent instead.
 # @tags: #type/constant #scope/widget
@@ -63,7 +60,6 @@ _PREVIEW_METADATA_FIELDS = tuple(
     for caption, key in _METADATA_FIELDS
     if key not in ("mime_description", "path")
 )
-_CAPTION_WIDTH = 128
 
 
 def _round_pixbuf(pixbuf: GdkPixbuf.Pixbuf, radius: int) -> GdkPixbuf.Pixbuf:
@@ -205,7 +201,7 @@ def pack_metadata_rows(
 def _metadata_row(caption: str, value: str, path: bool) -> Gtk.Box:
     """Build one caption/value row for preview metadata.
 
-    @tags: #scope/widget #scope/file-ops #action/render
+    @tags: #scope/widget #scope/file-ops #action/render #format/int #scope/shared
     """
     row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     row.get_style_context().add_class("mc-meta")
@@ -215,7 +211,7 @@ def _metadata_row(caption: str, value: str, path: bool) -> Gtk.Box:
     label.set_halign(Gtk.Align.START)
     label.set_valign(Gtk.Align.START)
     label.set_xalign(0)
-    label.set_size_request(_CAPTION_WIDTH, -1)
+    label.set_size_request(CAPTION_WIDTH, -1)
 
     value_label = Gtk.Label(label=value)
     value_label.get_style_context().add_class("mc-meta-value")
@@ -259,7 +255,7 @@ class PreviewPane(Gtk.Box):
     def __init__(self) -> None:
         """Create the preview content box and show the empty state.
 
-        @tags: #lifecycle/init #scope/widget #scope/file-ops #action/render
+        @tags: #lifecycle/init #scope/widget #scope/file-ops #action/render #format/int #scope/shared #type/widget
         """
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.get_style_context().add_class("mc-preview")
@@ -273,13 +269,13 @@ class PreviewPane(Gtk.Box):
 
         self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._content.get_style_context().add_class("mc-preview-content")
-        self._content.set_size_request(_PREVIEW_CONTENT_WIDTH, -1)
+        self._content.set_size_request(PREVIEW_CONTENT_WIDTH, -1)
         self._content.set_halign(Gtk.Align.START)
         self._content.set_valign(Gtk.Align.START)
-        self._content.set_margin_start(_PREVIEW_CONTENT_MARGIN)
-        self._content.set_margin_end(_PREVIEW_CONTENT_MARGIN)
-        self._content.set_margin_top(_PREVIEW_CONTENT_MARGIN)
-        self._content.set_margin_bottom(_PREVIEW_CONTENT_MARGIN)
+        self._content.set_margin_start(PREVIEW_CONTENT_MARGIN)
+        self._content.set_margin_end(PREVIEW_CONTENT_MARGIN)
+        self._content.set_margin_top(PREVIEW_CONTENT_MARGIN)
+        self._content.set_margin_bottom(PREVIEW_CONTENT_MARGIN)
         self.pack_start(self._content, True, True, 0)
         self.update_file(None)
 
@@ -290,15 +286,15 @@ class PreviewPane(Gtk.Box):
     def update_file(self, path: Optional[str]) -> None:
         """Show ``path``, or the empty state when ``path`` is None.
 
-        Images are scaled to fit ``_IMAGE_FIT_WIDTH`` by
-        ``_IMAGE_FIT_HEIGHT``. A loader failure still leaves
+        Images are scaled to fit ``IMAGE_FIT_WIDTH`` by
+        ``IMAGE_FIT_HEIGHT``. A loader failure still leaves
         ``preview_kind`` as ``image`` and draws the themed icon instead,
         so a corrupt photo is not presented as a generic file.
 
         Args:
             path: Local file path, or None to clear the pane.
 
-        @tags: #scope/file-ops #scope/widget #scope/view-preference #action/render
+        @tags: #scope/file-ops #scope/widget #scope/view-preference #action/render #format/int #scope/shared
         """
         self._clear()
         if not path:
@@ -387,7 +383,7 @@ class PreviewPane(Gtk.Box):
     def _image_widget(self, meta: dict) -> Gtk.Widget:
         """_image_widget.
 
-        @tags: #scope/file-ops #scope/widget #action/render
+        @tags: #scope/file-ops #scope/widget #action/render #format/int #scope/shared #type/widget
         """
         frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         frame.get_style_context().add_class("mc-preview-image")
@@ -397,18 +393,18 @@ class PreviewPane(Gtk.Box):
         try:
             pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
                 self._path,
-                _IMAGE_FIT_WIDTH,
-                _IMAGE_FIT_HEIGHT,
+                IMAGE_FIT_WIDTH,
+                IMAGE_FIT_HEIGHT,
                 True,
             )
-            image.set_from_pixbuf(_round_pixbuf(pixbuf, _IMAGE_CORNER_RADIUS))
+            image.set_from_pixbuf(_round_pixbuf(pixbuf, IMAGE_CORNER_RADIUS))
         except (GLib.Error, OSError, Exception):
             # Kind stays "image". The icon is only a stand-in for the pixels.
             image.set_from_icon_name(
                 meta.get("icon_name") or "image-x-generic-symbolic",
                 Gtk.IconSize.DIALOG,
             )
-            image.set_pixel_size(_LARGE_ICON)
+            image.set_pixel_size(LARGE_ICON)
         frame.pack_start(image, False, False, 0)
         return frame
 
@@ -434,14 +430,14 @@ class PreviewPane(Gtk.Box):
     def _icon_widget(self, meta: dict) -> Gtk.Widget:
         """_icon_widget.
 
-        @tags: #scope/file-ops #scope/widget #action/render
+        @tags: #scope/file-ops #scope/widget #action/render #format/int #scope/shared #type/widget
         """
         content_type = meta.get("content_type") or ""
         theme = Gtk.IconTheme.get_default()
         gicon = Gio.content_type_get_icon(content_type) if content_type else None
         info = None
         if gicon is not None and theme is not None:
-            info = theme.lookup_by_gicon(gicon, _LARGE_ICON, Gtk.IconLookupFlags.FORCE_SIZE)
+            info = theme.lookup_by_gicon(gicon, LARGE_ICON, Gtk.IconLookupFlags.FORCE_SIZE)
 
         pixbuf = None
         symbolic = info is None or info.is_symbolic()
@@ -456,7 +452,7 @@ class PreviewPane(Gtk.Box):
 
         tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         tile.get_style_context().add_class("mc-preview-tile")
-        tile.set_size_request(_TILE_SIZE, _TILE_SIZE)
+        tile.set_size_request(TILE_SIZE, TILE_SIZE)
         tile.set_halign(Gtk.Align.CENTER)
         image = Gtk.Image()
         image.set_halign(Gtk.Align.CENTER)
@@ -474,13 +470,13 @@ class PreviewPane(Gtk.Box):
     def _set_accent_icon(self, image, tile, info, gicon, theme, meta: dict) -> None:
         """Recolor a symbolic icon with the theme's selected foreground.
 
-        @tags: #scope/widget #scope/file-ops #action/render
+        @tags: #scope/widget #scope/file-ops #action/render #format/int #scope/shared
         """
         symbolic_info = info
         if gicon is not None and theme is not None and (info is None or not info.is_symbolic()):
             forced = theme.lookup_by_gicon(
                 gicon,
-                _LARGE_ICON,
+                LARGE_ICON,
                 Gtk.IconLookupFlags.FORCE_SIZE | Gtk.IconLookupFlags.FORCE_SYMBOLIC,
             )
             if forced is not None:
@@ -496,7 +492,7 @@ class PreviewPane(Gtk.Box):
             meta.get("icon_name") or "text-x-generic-symbolic",
             Gtk.IconSize.DIALOG,
         )
-        image.set_pixel_size(_LARGE_ICON)
+        image.set_pixel_size(LARGE_ICON)
 
     def _paint_tile_tint(self, tile: Gtk.Widget, tint: tuple[int, int, int]) -> None:
         """Fill the tile with the icon's own color at low opacity.

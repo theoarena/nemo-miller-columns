@@ -1832,7 +1832,7 @@ class MillerColumnsUiTests(unittest.TestCase):
                     if isinstance(child, Gtk.Image)
                 ]
                 self.assertTrue(icons)
-                self.assertTrue(all(icon.get_pixel_size() == open_with_module._MENU_ICON_SIZE for icon in icons))
+                self.assertTrue(all(icon.get_pixel_size() == open_with_module.MENU_ICON_SIZE for icon in icons))
 
                 column.select_name("sub")
                 folder_menu = column._build_context_menu()

@@ -35,18 +35,11 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
+from miller.config import BOARD_MIN_SIZE, KEYBOARD_DIR_DELAY_MS
 from miller.data import FileEntry
 from miller.theme import bind_accent_ink, install_theme
 from miller.ui.column import MillerColumn
 from miller.ui.preview import PreviewPane
-
-# Up/Down onto a directory opens it on the next main-loop turn. A longer
-# wait left the previous column building rows, and that build held the
-# GTK thread, so the key looked late and the window looked frozen. Repeat
-# still resets this timer: keys already queued collapse into the last
-# folder. Clicks and file rows do not use this timer.
-# @tags: #type/constant #scope/navigation #format/int
-_KEYBOARD_DIR_DELAY_MS = 180
 
 
 class FlexScrolledWindow(Gtk.ScrolledWindow):
@@ -63,34 +56,34 @@ class FlexScrolledWindow(Gtk.ScrolledWindow):
     def do_get_preferred_width(self):
         """do_get_preferred_width.
 
-        @tags: #scope/widget #type/widget #scope/slot-lifecycle
+        @tags: #scope/widget #type/widget #scope/slot-lifecycle #format/int #action/render #scope/shared #type/helper
         """
         _minimum, natural = Gtk.ScrolledWindow.do_get_preferred_width(self)
-        return (100, max(100, natural))
+        return (BOARD_MIN_SIZE, max(BOARD_MIN_SIZE, natural))
 
     def do_get_preferred_height(self):
         """do_get_preferred_height.
 
-        @tags: #scope/widget #type/widget #scope/slot-lifecycle
+        @tags: #scope/widget #type/widget #scope/slot-lifecycle #format/int #action/render #scope/shared #type/helper
         """
         _minimum, natural = Gtk.ScrolledWindow.do_get_preferred_height(self)
-        return (100, max(100, natural))
+        return (BOARD_MIN_SIZE, max(BOARD_MIN_SIZE, natural))
 
     def do_get_preferred_width_for_height(self, height):
         """do_get_preferred_width_for_height.
 
-        @tags: #scope/widget #type/widget #scope/slot-lifecycle
+        @tags: #scope/widget #type/widget #scope/slot-lifecycle #format/int #action/render #scope/shared #type/helper
         """
         _minimum, natural = Gtk.ScrolledWindow.do_get_preferred_width_for_height(self, height)
-        return (100, max(100, natural))
+        return (BOARD_MIN_SIZE, max(BOARD_MIN_SIZE, natural))
 
     def do_get_preferred_height_for_width(self, width):
         """do_get_preferred_height_for_width.
 
-        @tags: #scope/widget #type/widget #scope/slot-lifecycle
+        @tags: #scope/widget #type/widget #scope/slot-lifecycle #format/int #action/render #scope/shared #type/helper
         """
         _minimum, natural = Gtk.ScrolledWindow.do_get_preferred_height_for_width(self, width)
-        return (100, max(100, natural))
+        return (BOARD_MIN_SIZE, max(BOARD_MIN_SIZE, natural))
 
 
 class MillerColumnsView(Gtk.EventBox):
@@ -255,13 +248,13 @@ class MillerColumnsView(Gtk.EventBox):
     def flush_selection(self) -> None:
         """Apply a keyboard folder open that is still waiting.
 
-        Up/Down onto a directory waits ``_KEYBOARD_DIR_DELAY_MS`` so keys
+        Up/Down onto a directory waits ``KEYBOARD_DIR_DELAY_MS`` so keys
         already queued collapse into one folder. Clicks, files, and
         Right/Enter apply in the select handler, so this is a no-op unless
         that wait is still pending. Tests call it to open the last folder
         without sleeping.
     
-        @tags: #scope/navigation #action/bind #scope/widget #action/read #action/navigate
+        @tags: #scope/navigation #action/bind #scope/widget #action/read #action/navigate #format/int #scope/shared
         """
         pending = self._pending
         self._cancel_pending()
@@ -305,14 +298,14 @@ class MillerColumnsView(Gtk.EventBox):
         """Apply a click now, and wait only for a keyboard move onto a folder.
 
         Up/Down shares this callback with clicks. A folder reached by arrow
-        waits ``_KEYBOARD_DIR_DELAY_MS`` (the next main-loop turn) so a
+        waits ``KEYBOARD_DIR_DELAY_MS`` (the next main-loop turn) so a
         column that is still building rows is destroyed before another
         slice runs. The row
         highlight is already on the column; only the chain to the right waits.
         A click, a file, Shift+extend, ``select_name``, Right, or Enter
         cancels that wait and updates the chain in this call.
 
-        @tags: #scope/navigation #action/bind #scope/widget #action/read #complexity/high
+        @tags: #scope/navigation #action/bind #scope/widget #action/read #complexity/high #format/int #scope/shared
         """
         # Auto-select while stepping into a column must not schedule a chain
         # update. The flag is only set around that select.
@@ -329,7 +322,7 @@ class MillerColumnsView(Gtk.EventBox):
             if self._select_timer:
                 GLib.source_remove(self._select_timer)
             self._select_timer = GLib.timeout_add(
-                _KEYBOARD_DIR_DELAY_MS, self._on_select_timeout
+                KEYBOARD_DIR_DELAY_MS, self._on_select_timeout
             )
             return
         self._cancel_pending()
