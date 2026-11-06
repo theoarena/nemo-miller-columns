@@ -53,9 +53,12 @@ def _ctrl_cut(column) -> None:
 
 
 def _ctrl_paste(column) -> None:
-    """Paste into the column directory.
+    """Paste using the same destination rules as ``MillerColumn.paste_clipboard``.
 
-    @tags: #scope/file-ops #action/write #side-effect/clipboard #type/helper
+    One selected folder receives the items; otherwise the column's listed
+    directory does.
+
+    @tags: #scope/file-ops #scope/widget #action/write #action/bind #side-effect/clipboard #type/helper
     """
     column.paste_clipboard()
 
@@ -361,7 +364,7 @@ class ColumnInputMixin:
     def _on_button_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         """Handle primary press bookkeeping and open the context menu on right click.
 
-        @tags: #scope/widget #scope/navigation #scope/view-preference #scope/file-ops #action/bind #action/render
+        @tags: #scope/widget #scope/navigation #scope/view-preference #scope/file-ops #action/bind #action/render #type/helper #complexity/high
         """
         if event.button == 1 and event.type in (
             Gdk.EventType._2BUTTON_PRESS,
@@ -380,6 +383,10 @@ class ColumnInputMixin:
         if event.button == 1:
             self._selection_from_user = True
             self._primary_presses = 1
+            # Shift+arrow reads the focused row. A click that only changes
+            # the selection would otherwise extend from the previous cursor.
+            if self._press_row is not None:
+                self._press_row.grab_focus()
             return False
         if event.button != 3:
             return False
@@ -482,7 +489,7 @@ class ColumnInputMixin:
         Args:
             delta: ``-1`` toward the top of the list, ``1`` toward the bottom.
 
-        @tags: #scope/navigation #action/read #action/bind #scope/widget #type/helper
+        @tags: #scope/navigation #scope/file-ops #scope/widget #action/read #action/bind #type/helper #complexity/high
         """
         rows = self._visible_real_rows()
         if not rows:
@@ -493,7 +500,9 @@ class ColumnInputMixin:
             anchor = selected[0] if selected else rows[0]
             self._anchor_row = anchor
         focused = self._focused_row()
-        if focused in rows:
+        # Focus can still sit on a row the click just unselected. That row
+        # is not an end of the selection, so it must not collapse the range.
+        if focused in rows and focused.is_selected():
             cursor = focused
         else:
             selected = [row for row in rows if row.is_selected()]

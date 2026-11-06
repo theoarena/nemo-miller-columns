@@ -1057,7 +1057,7 @@ class ColumnListMixin:
         does notify, with whatever is still selected. The reload waits while
         a rename entry is open so it does not destroy that entry.
 
-        @tags: #scope/file-ops #scope/navigation #action/read #action/bind #action/render #scope/widget
+        @tags: #scope/file-ops #scope/navigation #action/read #action/bind #action/render #scope/widget #side-effect/clipboard #side-effect/filesystem #type/helper
         """
         if self._dead:
             return
@@ -1071,7 +1071,17 @@ class ColumnListMixin:
         ]
         anchor_entry = getattr(self._anchor_row, "file_entry", None)
         anchor_name = anchor_entry.name if anchor_entry is not None else None
+        pending = self._pending_paste_name
         self.refresh()
+        # ``_pending_paste_name`` is set when paste ran before rows matched
+        # disk. Prefer that basename on this reload instead of restoring the
+        # pre-paste selection.
+        if pending:
+            row = self._row_named(pending)
+            if row is not None and self._name_matches(pending):
+                self._pending_paste_name = None
+                self.select_name(pending)
+                return
         wanted = set(previous)
         rows = [
             row

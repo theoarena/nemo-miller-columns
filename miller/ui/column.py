@@ -10,6 +10,10 @@ and inline rename live in ``column_menu``.
 
 The list selects several rows. A directory monitor reloads the column after
 Nemo finishes a drop, because that work returns before the files move.
+Paste into exactly one selected folder targets that directory; otherwise the
+paste goes to this column's directory. The column that lists the destination
+reloads and selects the pasted basename when the row exists, or keeps
+``_pending_paste_name`` until the directory monitor reload catches up.
 The first listing is asynchronous so opening a column never blocks the GTK
 main loop on large directories, and the column can cancel in-flight work on
 destroy. Later reloads stay synchronous so delete, paste, and rename still see
@@ -125,6 +129,8 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         # True only while a leading Space is still being dispatched. The
         # ListBox maps that key to row activation; the guard reads this.
         self._space_passthrough = False
+        # Basename to select once a paste Nemo has not finished yet shows up.
+        self._pending_paste_name: str | None = None
 
         self.get_style_context().add_class("mc-column")
         self.set_size_request(_COLUMN_WIDTH, -1)
@@ -212,15 +218,79 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         copy_to_clipboard([entry.path for entry in entries], cut=cut)
 
     def paste_clipboard(self) -> None:
-        """Paste into this directory, reload, and select the last new name.
+        """Paste into the target directory, reload, and select the new name.
 
-        @tags: #scope/file-ops #action/write #side-effect/clipboard #scope/widget
+        A single selected folder receives the files (Paste Into Folder).
+        A file, several rows, or an empty selection uses this column.
+        The column that lists the target selects the last pasted name
+        when the row exists, or on the next directory reload.
+
+        @tags: #scope/file-ops #scope/navigation #scope/widget #action/read #action/write #action/bind #side-effect/clipboard #side-effect/filesystem #type/helper #complexity/high
         """
-        pasted = paste_from_clipboard(self.directory_path)
+        dest = self._paste_directory()
+        try:
+            pasted = paste_from_clipboard(dest)
+        except Exception as error:
+            # ``paste_from_clipboard`` should not raise; this is a last-resort guard.
+            print(f"[miller] Failed to paste: {error}")
+            return
+        column = self._column_listing(dest)
+        if column is None:
+            return
+        column._select_pasted(pasted)
+
+    def _paste_directory(self) -> str:
+        """Return the directory that should receive a paste.
+
+        One selected folder is the destination. Anything else pastes
+        into the folder this column is listing.
+
+        @tags: #scope/file-ops #scope/navigation #scope/widget #action/read #side-effect/clipboard #type/helper
+        """
+        entries = self.get_selected_entries()
+        # A file, a multi-selection, or no row has no folder to paste into.
+        if len(entries) == 1 and entries[0].is_dir:
+            return entries[0].path
+        return self.directory_path
+
+    def _column_listing(self, directory: str):
+        """Return the open column that lists ``directory``, if any.
+
+        @tags: #scope/file-ops #scope/navigation #scope/widget #action/find #side-effect/clipboard #type/helper
+        """
+        target = os.path.abspath(directory)
+        if os.path.abspath(self.directory_path) == target:
+            return self
+        from miller.ui.board import MillerColumnsView
+
+        widget = self.get_parent()
+        while widget is not None and not isinstance(widget, MillerColumnsView):
+            widget = widget.get_parent()
+        if widget is None:
+            return None
+        for column in widget.columns:
+            if os.path.abspath(column.directory_path) == target:
+                return column
+        return None
+
+    def _select_pasted(self, pasted: list[str]) -> None:
+        """Reload and select the last pasted basename.
+
+        Nemo creates the file after this call returns. The name is kept
+        until a directory reload sees the row.
+
+        @tags: #scope/file-ops #scope/navigation #scope/widget #action/read #action/bind #action/render #side-effect/filesystem #side-effect/clipboard #type/helper
+        """
         self.refresh()
         if not pasted:
             return
-        self.select_name(os.path.basename(pasted[-1]))
+        name = os.path.basename(pasted[-1])
+        row = self._row_named(name)
+        if row is not None and self._name_matches(name):
+            self._pending_paste_name = None
+            self.select_name(name)
+            return
+        self._pending_paste_name = name
 
     def _unique_folder_name(self, name: str) -> str:
         """_unique_folder_name.

@@ -33,6 +33,7 @@ from miller.ui import dnd as dnd_module
 from miller.ui.column import BACKGROUND_MENU_LABELS, CONTEXT_MENU_LABELS
 from miller.ui.open_with import build_app_chooser
 from miller.ui.preview import _PREVIEW_METADATA_FIELDS, icon_tint, pack_metadata_rows
+import miller.data as data_module
 import miller.ui.column as column_module
 import miller.ui.nemo_items as nemo_items
 import miller.ui.open_with as open_with_module
@@ -2468,6 +2469,157 @@ class MillerColumnsUiTests(unittest.TestCase):
             finally:
                 column_list.list_directory_async = real
                 MillerColumnsView._wait_for_column_load = previous
+
+    def test_copy_uses_the_selection_at_key_time(self):
+        copied = []
+        original_copy = column_module.copy_to_clipboard
+        column_module.copy_to_clipboard = lambda paths, cut=False: copied.append((list(paths), cut))
+        original_popup = Gtk.Menu.popup
+        Gtk.Menu.popup = lambda *args, **kwargs: None
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                paths = {}
+                for name in ("a.txt", "b.txt", "c.txt"):
+                    path = os.path.join(tmp, name)
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(name)
+                    paths[name] = os.path.abspath(path)
+                os.makedirs(os.path.join(tmp, "sub"))
+                with open(os.path.join(tmp, "sub", "inside.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("in")
+                view = self.mount(MillerColumnsView(tmp))
+                column = view.columns[0]
+                _click_row(column, _row_named(column, "a.txt"))
+                column.handle_key(Gdk.KEY_c, Gdk.ModifierType.CONTROL_MASK)
+                self.assertEqual(copied[-1], ([paths["a.txt"]], False))
+
+                column.handle_key(Gdk.KEY_Down, Gdk.ModifierType.SHIFT_MASK)
+                column.handle_key(Gdk.KEY_c, Gdk.ModifierType.CONTROL_MASK)
+                self.assertEqual(copied[-1][0], [paths["a.txt"], paths["b.txt"]])
+
+                column.handle_key(Gdk.KEY_a, Gdk.ModifierType.CONTROL_MASK)
+                column._set_search_query("b")
+                column.handle_key(Gdk.KEY_x, Gdk.ModifierType.CONTROL_MASK)
+                self.assertEqual(copied[-1], ([paths["b.txt"]], True))
+                column._set_search_query("")
+
+                event = _button_event(column, _row_named(column, "c.txt"), Gdk.EventType.BUTTON_PRESS)
+                event.button = 3
+                column.listbox.emit("button-press-event", event)
+                _activate_menu(column._context_menu, "Copy")
+                self.assertEqual(copied[-1], ([paths["c.txt"]], False))
+                _activate_menu(column._context_menu, "Cut")
+                self.assertEqual(copied[-1], ([paths["c.txt"]], True))
+
+                column._set_selection([], notify=False)
+                before = len(copied)
+                column.handle_key(Gdk.KEY_c, Gdk.ModifierType.CONTROL_MASK)
+                column.copy_selected(False)
+                self.assertEqual(len(copied), before)
+
+                column.select_name("a.txt")
+                with open(os.path.join(tmp, "extra.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("extra")
+                self.assertTrue(
+                    pump_until(lambda: "extra.txt" in _entry_names(column), seconds=2.0)
+                )
+                column.handle_key(Gdk.KEY_c, Gdk.ModifierType.CONTROL_MASK)
+                self.assertEqual(copied[-1], ([paths["a.txt"]], False))
+
+                column.select_name("sub")
+                view.flush_selection()
+                self.assertEqual(len(view.columns), 2)
+                child = view.columns[1]
+                child.select_name("inside.txt")
+                child.focus_row()
+                pump()
+                self.assertIs(_focused_column(view), child)
+                child.handle_key(Gdk.KEY_c, Gdk.ModifierType.CONTROL_MASK)
+                self.assertEqual(
+                    copied[-1],
+                    ([os.path.abspath(os.path.join(tmp, "sub", "inside.txt"))], False),
+                )
+        finally:
+            column_module.copy_to_clipboard = original_copy
+            Gtk.Menu.popup = original_popup
+
+    def test_paste_targets_the_other_folder(self):
+        calls = []
+        original_transfer = data_module.transfer_uris
+
+        def fake(uris, dest, action):
+            calls.append((list(uris), os.path.abspath(dest), action))
+            for uri in uris:
+                source = Gio.File.new_for_uri(uri).get_path()
+                target = os.path.join(dest, os.path.basename(source))
+                if action == Gdk.DragAction.MOVE:
+                    os.rename(source, target)
+                else:
+                    with open(source, "rb") as src, open(target, "wb") as out:
+                        out.write(src.read())
+            return True
+
+        data_module.transfer_uris = fake
+        original_popup = Gtk.Menu.popup
+        Gtk.Menu.popup = lambda *args, **kwargs: None
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                source = os.path.join(tmp, "a.txt")
+                with open(source, "w", encoding="utf-8") as handle:
+                    handle.write("alpha")
+                sub = os.path.join(tmp, "sub")
+                nested = os.path.join(sub, "nested")
+                os.makedirs(nested)
+                with open(os.path.join(sub, "keep.txt"), "w", encoding="utf-8") as handle:
+                    handle.write("keep")
+                view = self.mount(MillerColumnsView(tmp))
+                column = view.columns[0]
+                column.select_name("a.txt")
+                column_module.copy_to_clipboard([os.path.abspath(source)])
+
+                column.select_name("sub")
+                view.flush_selection()
+                child = view.columns[1]
+                child.select_name("keep.txt")
+                child.focus_row()
+                child.handle_key(Gdk.KEY_v, Gdk.ModifierType.CONTROL_MASK)
+                self.assertEqual(os.path.abspath(calls[-1][1]), os.path.abspath(sub))
+                self.assertEqual(calls[-1][2], Gdk.DragAction.COPY)
+                self.assertEqual(child.get_selected().name, "a.txt")
+
+                os.remove(os.path.join(sub, "a.txt"))
+                calls.clear()
+                child._set_selection([], notify=False)
+                blank = Gdk.EventButton.new(Gdk.EventType.BUTTON_PRESS)
+                window = child.listbox.get_window()
+                if window is not None:
+                    blank.window = window
+                blank.button = 3
+                blank.x = 1
+                blank.y = 4000
+                blank.time = Gdk.CURRENT_TIME
+                child.listbox.emit("button-press-event", blank)
+                _activate_menu(child._context_menu, "Paste")
+                self.assertEqual(os.path.abspath(calls[-1][1]), os.path.abspath(sub))
+                self.assertEqual(child.get_selected().name, "a.txt")
+
+                os.remove(os.path.join(sub, "a.txt"))
+                calls.clear()
+                column.select_name("sub")
+                column.paste_clipboard()
+                self.assertEqual(os.path.abspath(calls[-1][1]), os.path.abspath(sub))
+                self.assertEqual(child.get_selected().name, "a.txt")
+        finally:
+            data_module.transfer_uris = original_transfer
+            Gtk.Menu.popup = original_popup
+
+
+def _activate_menu(menu, label):
+    for item in menu.get_children():
+        if isinstance(item, Gtk.MenuItem) and item.get_label() == label:
+            item.emit("activate")
+            return
+    raise AssertionError(label)
 
 
 if __name__ == "__main__":

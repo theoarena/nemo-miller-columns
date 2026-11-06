@@ -2,7 +2,12 @@
 
 GTK's Python bindings do not wrap ``gtk_clipboard_set_with_data``, so the
 cut flag is published through ctypes. Paste reads
-``x-special/gnome-copied-files``.
+``x-special/gnome-copied-files`` and queues ``CopyURIs`` / ``MoveURIs`` on
+``org.Nemo.FileOperations`` through ``miller.data.transfer_uris`` so this
+process never runs a synchronous ``Gio.File.copy`` on the GTK thread.
+Predicted destination paths use GNOME's ``(copy)`` / ``(copy N)`` naming for
+copies and basenames for cuts so the column can select them; failures log
+with a ``[miller]`` prefix and are not raised.
 """
 
 from __future__ import annotations
@@ -113,21 +118,28 @@ def copy_to_clipboard(paths: list[str], cut: bool = False) -> None:
 
 
 def paste_from_clipboard(dest_dir: str) -> list[str]:
-    """Paste the GNOME clipboard into ``dest_dir``.
+    """Queue a paste of the GNOME clipboard into ``dest_dir``.
 
-    Copy uses ``Gio.File.copy`` and, when the basename is taken, inserts
-    ``" (copy)"`` before the extension, then ``" (copy 2)"`` and so on.
-    Cut uses ``Gio.File.move``. An empty clipboard or a missing display
-    returns an empty list.
+    Copy and move go through ``transfer_uris`` (``CopyURIs`` /
+    ``MoveURIs`` on ``org.Nemo.FileOperations``). A synchronous
+    ``Gio.File.copy`` inside Nemo's main loop is what closed the
+    window. Nemo applies ``name (copy).ext`` and ``name (copy 2).ext``;
+    the returned paths are those names, chosen before the call, so the
+    column can select them when the files appear.
+
+    An empty clipboard, a missing display, a URI with no basename, a
+    missing source, or a destination that is not a writable directory
+    returns an empty list. Failures are logged with a ``[miller]``
+    prefix and are not raised.
 
     Args:
-        dest_dir: Directory that receives the files.
+        dest_dir: Directory that receives the files. ``~`` is expanded.
 
     Returns:
-        Absolute paths of the files that landed in ``dest_dir``, in
-        clipboard order.
+        Absolute paths expected in ``dest_dir``, in clipboard order.
+        Empty when nothing was queued.
 
-    @tags: #scope/file-ops #action/write #side-effect/clipboard
+    @tags: #scope/file-ops #scope/navigation #action/read #action/write #side-effect/clipboard #side-effect/filesystem #type/helper #complexity/high #security/path-validation
     """
     if not _display_available():
         return []
@@ -138,28 +150,62 @@ def paste_from_clipboard(dest_dir: str) -> list[str]:
         return []
     if not payload:
         return []
-    action, uris = parse_gnome_copied_files(payload)
+    try:
+        action, uris = parse_gnome_copied_files(payload)
+    except Exception as error:
+        print(f"[miller] Failed to read clipboard: {error}")
+        return []
     if not uris:
         return []
+    try:
+        destination_dir = os.path.abspath(os.path.expanduser(dest_dir))
+    except Exception as error:
+        print(f"[miller] {error}")
+        return []
+    # The handler must not raise: a read-only or missing folder used to
+    # escape from the GTK callback and take Nemo down with it.
+    if not os.path.isdir(destination_dir) or not os.access(destination_dir, os.W_OK):
+        print(f"[miller] Paste destination is not writable: {destination_dir}")
+        return []
 
-    destination_dir = os.path.abspath(os.path.expanduser(dest_dir))
-    written: list[str] = []
+    usable: list[str] = []
+    planned: list[str] = []
     for uri in uris:
-        source = Gio.File.new_for_uri(uri)
-        basename = source.get_basename()
-        if not basename:
-            raise ValueError(f"Clipboard URI has no basename: {uri}")
-        if action == "cut":
-            destination = Gio.File.new_for_path(os.path.join(destination_dir, basename))
-            source.move(destination, Gio.FileCopyFlags.NONE, None, None, None)
-        else:
-            destination = _unique_destination(destination_dir, basename)
-            source.copy(destination, Gio.FileCopyFlags.NONE, None, None, None)
-        local = destination.get_path()
-        if not local:
-            raise OSError(f"Paste of {uri} did not produce a local path")
-        written.append(os.path.abspath(local))
-    return written
+        try:
+            source = Gio.File.new_for_uri(uri)
+            basename = source.get_basename()
+            # ``not a uri`` and ``file:///`` have no file name to paste.
+            if not basename or basename in (".", "/"):
+                print(f"[miller] Clipboard URI has no basename: {uri}")
+                continue
+            if not source.query_exists(None):
+                print(f"[miller] Clipboard source is missing: {uri}")
+                continue
+            if action == "cut":
+                local = os.path.join(destination_dir, basename)
+            else:
+                local = _unique_destination(destination_dir, basename).get_path()
+            if not local:
+                print(f"[miller] Paste of {uri} did not produce a local path")
+                continue
+            planned.append(os.path.abspath(local))
+            usable.append(uri)
+        except Exception as error:
+            print(f"[miller] {error}")
+    if not usable:
+        return []
+
+    import miller.data as data
+
+    drag = Gdk.DragAction.MOVE if action == "cut" else Gdk.DragAction.COPY
+    try:
+        accepted = bool(data.transfer_uris(usable, destination_dir, drag))
+    except Exception as error:
+        print(f"[miller] {error}")
+        return []
+    if not accepted:
+        return []
+    return planned
 
 
 
@@ -308,20 +354,51 @@ def _clipboard_get(clipboard_ptr, selection_ptr, info, user_data) -> None:
         print(f"[miller] Failed to serve clipboard data: {error}")
 
 
-def _clipboard_clear(_clipboard_ptr, _user_data) -> None:
-    return None
+def _clipboard_clear(_clipboard_ptr, user_data) -> None:
+    """Ignore a clear for an older copy, and republish if GTK drops the current one.
+
+    Replacing the clipboard schedules the previous owner's clear. That
+    callback can run on a later main-loop turn, after the new copy is
+    already installed, and GTK then forgets the new owner. A clear for
+    the generation we just published puts the same bytes back. A clear
+    that arrives while a publish is in progress is the previous owner
+    and must not publish again.
+
+    @tags: #scope/file-ops #action/clear #action/write #side-effect/clipboard #type/helper #complexity/high
+    """
+    if _CLIPBOARD_SETTING:
+        return
+    try:
+        generation = int(user_data or 0)
+    except (TypeError, ValueError):
+        return
+    if generation != _CLIPBOARD_GENERATION:
+        return
+    gnome = _CLIPBOARD_PAYLOADS.get(0)
+    uri_list = _CLIPBOARD_PAYLOADS.get(1)
+    # No bytes to put back, or the uri-list slot was never filled.
+    if not gnome or uri_list is None:
+        return
+    _set_clipboard_targets(gnome, uri_list)
 
 
 _CLIPBOARD_GET_CB = _CLIPBOARD_GET_TYPE(_clipboard_get)
 _CLIPBOARD_CLEAR_CB = _CLIPBOARD_CLEAR_TYPE(_clipboard_clear)
+# Previous target arrays stay referenced. GTK still reads the last one
+# on the next main-loop turn; dropping that pointer clears the new owner.
+_CLIPBOARD_TARGET_HISTORY: list = []
+_CLIPBOARD_GENERATION = 0
+_CLIPBOARD_SETTING = False
 
 
 def _set_clipboard_targets(gnome_payload: bytes, uri_list_payload: bytes) -> None:
     """Publish clipboard targets via raw GTK C API.
 
-    @tags: #scope/file-ops #action/write #side-effect/clipboard #complexity/high
+    @tags: #scope/file-ops #action/write #action/bind #side-effect/clipboard #type/helper #complexity/high
     """
-    global _CLIPBOARD_TARGET_ARRAY
+    global _CLIPBOARD_TARGET_ARRAY, _CLIPBOARD_GENERATION, _CLIPBOARD_SETTING
+    _CLIPBOARD_GENERATION += 1
+    generation = _CLIPBOARD_GENERATION
     _CLIPBOARD_PAYLOADS[0] = gnome_payload
     _CLIPBOARD_PAYLOADS[1] = uri_list_payload
     _CLIPBOARD_TARGET_NAMES[0] = _GNOME_COPIED_FILES
@@ -329,17 +406,25 @@ def _set_clipboard_targets(gnome_payload: bytes, uri_list_payload: bytes) -> Non
     entries = (_GtkTargetEntry * 2)()
     entries[0] = _GtkTargetEntry(_GNOME_COPIED_FILES, 0, 0)
     entries[1] = _GtkTargetEntry(_TEXT_URI_LIST, 0, 1)
-    # GTK keeps the target strings. The array has to outlive this function.
+    # GTK keeps the target strings. The array has to outlive this function,
+    # and the previous array has to outlive the next main-loop turn.
     _CLIPBOARD_TARGET_ARRAY = entries
+    _CLIPBOARD_TARGET_HISTORY.append(entries)
+    if len(_CLIPBOARD_TARGET_HISTORY) > 8:
+        del _CLIPBOARD_TARGET_HISTORY[:-8]
     clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-    accepted = _libgtk().gtk_clipboard_set_with_data(
-        _pygobject_pointer(clipboard),
-        entries,
-        2,
-        _CLIPBOARD_GET_CB,
-        _CLIPBOARD_CLEAR_CB,
-        None,
-    )
+    _CLIPBOARD_SETTING = True
+    try:
+        accepted = _libgtk().gtk_clipboard_set_with_data(
+            _pygobject_pointer(clipboard),
+            entries,
+            2,
+            _CLIPBOARD_GET_CB,
+            _CLIPBOARD_CLEAR_CB,
+            ctypes.c_void_p(generation),
+        )
+    finally:
+        _CLIPBOARD_SETTING = False
     if not accepted:
         print("[miller] Clipboard rejected the copy targets")
 

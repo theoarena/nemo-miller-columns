@@ -54,6 +54,7 @@ from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Nemo
 import miller.data as data
 from miller.i18n import _, install
 from miller.ui.board import MillerColumnsView
+from miller.ui.column import MillerColumn
 
 # Frozen toolbar copy. Screen readers get this as the button name.
 _TOOLTIP = "Miller Columns (Ctrl+4)"
@@ -235,9 +236,11 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
 
         Returns:
             True when Control is held and the key is 1, 2, 3, or 4.
-            False for every other event so the focused column still sees it.
+            True for plain Ctrl+C/X/V while a Miller column has focus, so
+            Nemo's Edit accelerators do not also run. False for every other
+            event so the focused widget still sees it.
 
-        @tags: #scope/view-preference #scope/widget #scope/navigation #scope/file-ops #action/toggle #action/clear #action/bind
+        @tags: #scope/view-preference #scope/widget #scope/navigation #scope/file-ops #action/toggle #action/clear #action/bind #side-effect/clipboard
         """
         # A stale Space marker from an earlier key must not fire on this
         # one. The column sets it again if this press is a leading Space.
@@ -256,7 +259,62 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             if self._is_normal_directory(window):
                 self._apply_user_choice(window, False)
             return True
+        if self._claim_clipboard_key(window, keyval, state):
+            return True
         return False
+
+    def _claim_clipboard_key(self, window: Gtk.Window, keyval: int, state: int) -> bool:
+        """Copy, cut, or paste on the focused column and stop Nemo's binding.
+
+        This handler runs before window accelerators. Nemo's Edit menu
+        binds the same chords to the hidden directory view, whose
+        selection is not the Miller selection. Returning true is what
+        keeps that binding from running. Ctrl+Shift is a different
+        chord. A text entry, including the inline rename, keeps the key.
+
+        Args:
+            window: Window that received the event.
+            keyval: GDK key value.
+            state: Modifier mask. Shift is excluded.
+
+        Returns:
+            True when the column handled the chord.
+
+        @tags: #scope/file-ops #scope/widget #scope/navigation #action/read #action/bind #side-effect/clipboard #type/helper #complexity/high
+        """
+        if state & Gdk.ModifierType.SHIFT_MASK:
+            return False
+        if keyval not in (
+            Gdk.KEY_c,
+            Gdk.KEY_C,
+            Gdk.KEY_x,
+            Gdk.KEY_X,
+            Gdk.KEY_v,
+            Gdk.KEY_V,
+        ):
+            return False
+        column = self._focused_miller_column(window)
+        # A dead column or a click in the location bar belongs to Nemo.
+        if column is None or getattr(column, "_dead", False):
+            return False
+        focus = window.get_focus()
+        # Let Nemo handle the chord when a text widget or inline rename has focus.
+        if isinstance(focus, (Gtk.Entry, Gtk.TextView)) or column._rename_active():
+            return False
+        column.handle_key(keyval, state)
+        return True
+
+    def _focused_miller_column(self, window: Gtk.Window):
+        """Return the Miller column that contains the keyboard focus.
+
+        @tags: #scope/widget #scope/navigation #action/find #side-effect/clipboard #type/helper
+        """
+        widget = window.get_focus() if window is not None else None
+        while widget is not None:
+            if isinstance(widget, MillerColumn):
+                return widget
+            widget = widget.get_parent()
+        return None
 
     def _bind_window(self, window: Gtk.Window) -> None:
         """Connect the key handler and notebook page tracking once.

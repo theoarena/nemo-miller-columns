@@ -1035,6 +1035,113 @@ class ExtensionIntegrationTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIsNone(self.window._miller_space_column)
 
+    def test_clipboard_keys_do_not_reach_nemo_when_a_column_has_focus(self):
+        import miller.ui.column as column_module
+
+        folder = self._make_dir("clipboard-keys")
+        with open(os.path.join(folder, "a.txt"), "w", encoding="utf-8") as handle:
+            handle.write("a")
+        sub = os.path.join(folder, "sub")
+        os.makedirs(sub)
+        inside = os.path.join(sub, "inside.txt")
+        with open(inside, "w", encoding="utf-8") as handle:
+            handle.write("in")
+        data.set_miller_view_preferred(folder, True)
+        self._open(self.slot, folder)
+        view = self.slot._miller_view
+        column = view.columns[0]
+        self.window.present()
+        pump()
+        column.select_name("a.txt")
+        view.focus_active_column()
+        pump()
+
+        copied = []
+        pasted = []
+        original_copy = column_module.copy_to_clipboard
+        original_paste = column_module.paste_from_clipboard
+        column_module.copy_to_clipboard = (
+            lambda paths, cut=False: copied.append((list(paths), cut))
+        )
+        column_module.paste_from_clipboard = (
+            lambda dest: pasted.append(os.path.abspath(dest)) or []
+        )
+        nemo = []
+        group = Gtk.AccelGroup()
+        self.window.add_accel_group(group)
+
+        def hit(name):
+            def callback(*_args):
+                nemo.append(name)
+                return True
+            return callback
+
+        control = Gdk.ModifierType.CONTROL_MASK
+        group.connect(Gdk.KEY_c, control, Gtk.AccelFlags.VISIBLE, hit("copy"))
+        group.connect(Gdk.KEY_x, control, Gtk.AccelFlags.VISIBLE, hit("cut"))
+        group.connect(Gdk.KEY_v, control, Gtk.AccelFlags.VISIBLE, hit("paste"))
+        try:
+            _dispatch_key(self.window, Gdk.KEY_c, control)
+            self.assertEqual(
+                copied,
+                [([os.path.abspath(os.path.join(folder, "a.txt"))], False)],
+            )
+            self.assertEqual(nemo, [])
+
+            copied.clear()
+            _dispatch_key(self.window, Gdk.KEY_x, control)
+            self.assertEqual(
+                copied,
+                [([os.path.abspath(os.path.join(folder, "a.txt"))], True)],
+            )
+            self.assertEqual(nemo, [])
+
+            _dispatch_key(self.window, Gdk.KEY_v, control)
+            self.assertEqual(pasted, [os.path.abspath(folder)])
+            self.assertEqual(nemo, [])
+
+            copied.clear()
+            nemo.clear()
+            _dispatch_key(self.window, Gdk.KEY_c, control | Gdk.ModifierType.SHIFT_MASK)
+            self.assertEqual(copied, [])
+            self.assertEqual(nemo, [])
+
+            self._step_into(view, "sub")
+            child = view.columns[1]
+            child.select_name("inside.txt")
+            child.focus_row()
+            pump()
+            copied.clear()
+            _dispatch_key(self.window, Gdk.KEY_c, control)
+            self.assertEqual(copied, [([os.path.abspath(inside)], False)])
+            self.assertEqual(nemo, [])
+
+            copied.clear()
+            column.begin_rename()
+            pump()
+            _dispatch_key(self.window, Gdk.KEY_c, control)
+            self.assertEqual(copied, [])
+            self.assertEqual(nemo, ["copy"])
+            column._end_rename_widget()
+            pump()
+
+            entry = None
+            for widget in self.ext._walk(self.window):
+                if isinstance(widget, Gtk.Entry):
+                    entry = widget
+                    break
+            self.assertIsNotNone(entry)
+            entry.grab_focus()
+            pump()
+            copied.clear()
+            nemo.clear()
+            _dispatch_key(self.window, Gdk.KEY_c, control)
+            self.assertEqual(copied, [])
+            self.assertEqual(nemo, ["copy"])
+        finally:
+            column_module.copy_to_clipboard = original_copy
+            column_module.paste_from_clipboard = original_paste
+
 class InstallScriptTests(unittest.TestCase):
     """install.sh links the extension and removes only that symlink."""
 

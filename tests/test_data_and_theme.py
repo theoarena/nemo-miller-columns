@@ -24,6 +24,7 @@ from miller.data import (
     METADATA_KEY,
     RESERVED_VIEW_KEY,
     choose_drop_action,
+    copy_to_clipboard,
     create_subfolder,
     filter_drop_uris,
     format_gnome_copied_files,
@@ -35,6 +36,7 @@ from miller.data import (
     list_directory_async,
     open_in_same_window,
     parse_gnome_copied_files,
+    paste_from_clipboard,
     recommended_apps,
     rename_entry,
     resolve_miller_view_preferred,
@@ -46,6 +48,7 @@ from miller.data import (
     trash_entry,
 )
 import miller.data as data_module
+from miller.clipboard import _read_gnome_clipboard, _set_clipboard_targets
 from miller.listing import _entry_from_info
 from miller.theme import (
     ACCENT_INK_CLASS,
@@ -1144,6 +1147,210 @@ class DataAndThemeTests(unittest.TestCase):
             self.assertEqual(calls[0][4].unpack()[0], "org.example.Foo")
         finally:
             Gio.bus_get_sync = original
+
+    def test_second_copy_replaces_what_paste_reads(self):
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second, third = (
+                os.path.join(tmp, name) for name in ("a.txt", "b.txt", "c.txt")
+            )
+            for path in (first, second, third):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("x")
+            copy_to_clipboard([first])
+            copy_to_clipboard([second, third])
+            # The main loop is where GTK drops a copy whose target array
+            # was freed. Paste has to see the second set after that turn.
+            for _ in range(20):
+                while GLib.main_context_default().pending():
+                    GLib.main_context_default().iteration(False)
+            action, uris = parse_gnome_copied_files(_read_gnome_clipboard())
+            expected = [
+                Gio.File.new_for_path(second).get_uri(),
+                Gio.File.new_for_path(third).get_uri(),
+            ]
+            self.assertEqual(action, "copy")
+            self.assertEqual(uris, expected)
+            self.assertNotIn(Gio.File.new_for_path(first).get_uri(), uris)
+
+            out = os.path.join(tmp, "out")
+            os.makedirs(out)
+            original = data_module.transfer_uris
+            data_module.transfer_uris = lambda uris, dest, action: True
+            try:
+                pasted = paste_from_clipboard(out)
+            finally:
+                data_module.transfer_uris = original
+            self.assertEqual(
+                [os.path.basename(path) for path in pasted],
+                ["b.txt", "c.txt"],
+            )
+
+    def test_copy_and_cut_switch_the_clipboard_action(self):
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(tmp, "a.txt")
+            second = os.path.join(tmp, "b.txt")
+            for path in (first, second):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("x")
+            copy_to_clipboard([first], cut=False)
+            copy_to_clipboard([second], cut=True)
+            action, uris = parse_gnome_copied_files(_read_gnome_clipboard())
+            self.assertEqual(action, "cut")
+            self.assertEqual(uris, [Gio.File.new_for_path(second).get_uri()])
+            copy_to_clipboard([first], cut=False)
+            action, uris = parse_gnome_copied_files(_read_gnome_clipboard())
+            self.assertEqual(action, "copy")
+            self.assertEqual(uris, [Gio.File.new_for_path(first).get_uri()])
+
+    def test_clipboard_payload_keeps_order_spaces_and_accents(self):
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            names = ("z.txt", "b c.txt", "ação.txt", "a.txt")
+            paths = []
+            for name in names:
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(name)
+                paths.append(path)
+            copy_to_clipboard(paths, cut=True)
+            action, uris = parse_gnome_copied_files(_read_gnome_clipboard())
+            self.assertEqual(action, "cut")
+            self.assertEqual(
+                uris,
+                [Gio.File.new_for_path(path).get_uri() for path in paths],
+            )
+
+    def test_paste_errors_do_not_escape(self):
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+        import io
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "dest")
+            os.makedirs(dest)
+            buffer = io.StringIO()
+
+            _set_clipboard_targets(b"copy\nnot a uri\n", b"")
+            with redirect_stdout(buffer):
+                self.assertEqual(paste_from_clipboard(dest), [])
+            self.assertIn("[miller]", buffer.getvalue())
+
+            missing = Gio.File.new_for_path(os.path.join(tmp, "gone.txt")).get_uri()
+            _set_clipboard_targets(f"copy\n{missing}\n".encode(), b"")
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                self.assertEqual(paste_from_clipboard(dest), [])
+            self.assertIn("[miller]", buffer.getvalue())
+
+            source = os.path.join(tmp, "note.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("n")
+            copy_to_clipboard([source])
+            locked = os.path.join(tmp, "locked")
+            os.makedirs(locked)
+            os.chmod(locked, 0o555)
+            try:
+                if os.access(locked, os.W_OK):
+                    self.skipTest("process can write a mode 0555 directory")
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    self.assertEqual(paste_from_clipboard(locked), [])
+                self.assertIn("[miller]", buffer.getvalue())
+            finally:
+                os.chmod(locked, 0o755)
+
+            _set_clipboard_targets(b"", b"")
+            self.assertEqual(paste_from_clipboard(dest), [])
+            _set_clipboard_targets(b"copy\n", b"")
+            self.assertEqual(paste_from_clipboard(dest), [])
+
+    def test_paste_copy_names_collisions_through_nemo(self):
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            source_dir = os.path.join(tmp, "src")
+            dest = os.path.join(tmp, "dest")
+            os.makedirs(source_dir)
+            os.makedirs(dest)
+            source = os.path.join(source_dir, "note.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("note")
+            with open(os.path.join(dest, "note.txt"), "w", encoding="utf-8") as handle:
+                handle.write("already")
+            copy_to_clipboard([source])
+            calls, original = _accepting_file_operation()
+            data_module._call_nemo_file_operations = calls.append_operation
+            try:
+                first = paste_from_clipboard(dest)
+                second = paste_from_clipboard(dest)
+            finally:
+                data_module._call_nemo_file_operations = original
+            self.assertEqual(calls.methods, ["CopyURIs", "CopyURIs"])
+            self.assertTrue(first[0].endswith("note (copy).txt"))
+            self.assertTrue(os.path.isfile(first[0]))
+            with open(first[0], encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "note")
+            self.assertTrue(second[0].endswith("note (copy 2).txt"))
+            self.assertTrue(os.path.isfile(second[0]))
+
+    def test_paste_cut_moves_through_nemo(self):
+        if not ensure_gtk():
+            self.skipTest("GTK display unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            source_dir = os.path.join(tmp, "src")
+            dest = os.path.join(tmp, "dest")
+            os.makedirs(source_dir)
+            os.makedirs(dest)
+            source = os.path.join(source_dir, "move me.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("cut")
+            copy_to_clipboard([source], cut=True)
+            calls, original = _accepting_file_operation()
+            data_module._call_nemo_file_operations = calls.append_operation
+            try:
+                pasted = paste_from_clipboard(dest)
+            finally:
+                data_module._call_nemo_file_operations = original
+            self.assertEqual(calls.methods, ["MoveURIs"])
+            self.assertEqual(os.path.basename(pasted[0]), "move me.txt")
+            self.assertFalse(os.path.exists(source))
+            with open(pasted[0], encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "cut")
+
+
+class _FileOperationLog:
+    """Stand-in for Nemo's async copy and move, including collision names."""
+
+    def __init__(self):
+        self.methods = []
+
+    def append_operation(self, method, uris, dest_uri):
+        from miller.clipboard import _unique_destination
+
+        self.methods.append(method)
+        dest = Gio.File.new_for_uri(dest_uri).get_path()
+        for uri in uris:
+            source = Gio.File.new_for_uri(uri)
+            basename = source.get_basename()
+            path = source.get_path()
+            if method == "MoveURIs":
+                os.rename(path, os.path.join(dest, basename))
+            else:
+                target = _unique_destination(dest, basename).get_path()
+                with open(path, "rb") as src, open(target, "wb") as out:
+                    out.write(src.read())
+        return True
+
+
+def _accepting_file_operation():
+    """Replace the Nemo bus call with a fake that finishes immediately."""
+    return _FileOperationLog(), data_module._call_nemo_file_operations
 
 
 if __name__ == "__main__":
