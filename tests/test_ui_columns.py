@@ -567,7 +567,7 @@ class MillerColumnsUiTests(unittest.TestCase):
             self.assertEqual(view._select_timer, 0)
             self.assertIsNone(view._pending)
 
-    def test_keyboard_down_onto_file_previews_without_flush(self):
+    def test_keyboard_down_onto_file_waits_for_flush(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "alpha"))
             with open(os.path.join(tmp, "note.txt"), "w", encoding="utf-8") as handle:
@@ -579,10 +579,15 @@ class MillerColumnsUiTests(unittest.TestCase):
             self.assertEqual(len(view.columns), 1)
             column.handle_key(Gdk.KEY_Down)
             self.assertEqual(column.get_selected().name, "note.txt")
-            self.assertEqual(view.preview_pane.get_title(), "note.txt")
+            self.assertEqual(view.preview_pane.get_title(), "")
             self.assertEqual(len(view.columns), 1)
+            self.assertNotEqual(view._select_timer, 0)
+            self.assertEqual(view._pending[1].name, "note.txt")
+            view.flush_selection()
             self.assertEqual(view._select_timer, 0)
             self.assertIsNone(view._pending)
+            self.assertEqual(view.preview_pane.get_title(), "note.txt")
+            self.assertEqual(view.preview_pane.preview_kind, "text")
 
     def test_click_cancels_pending_keyboard_folder(self):
         with tempfile.TemporaryDirectory() as tmp:

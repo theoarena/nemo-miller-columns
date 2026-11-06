@@ -454,9 +454,9 @@ class ColumnInputMixin:
         """Move the single selection by ``delta`` rows.
 
         ``_keyboard_select`` is set only around the select so the board can
-        wait before listing a directory. Clicks and ``select_name`` leave the
-        flag clear and open at once. The highlight itself is not delayed.
-        Keypad Up/Down use this same path.
+        wait before listing a directory or building a file preview. Clicks
+        and ``select_name`` leave the flag clear and open at once. The
+        highlight itself is not delayed. Keypad Up/Down use this same path.
 
         Args:
             delta: ``-1`` toward the top, ``1`` toward the bottom.

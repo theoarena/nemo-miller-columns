@@ -11,18 +11,25 @@ from __future__ import annotations
 # navigate, so key repeat does not open every folder on the way.
 #
 # @tags: #type/constant #format/int #scope/navigation #scope/shared #action/navigate
-NAVIGATE_DELAY_MS = 150
+NAVIGATE_DELAY_MS = 180
 
 # Board waits this long after Up/Down onto a directory before listing the
-# child column. Clicks and file rows skip this timer.
+# child column. Clicks skip this timer; keyboard file rows use
+# ``KEYBOARD_PREVIEW_DELAY_MS`` instead.
 #
 # @tags: #type/constant #format/int #scope/navigation #scope/widget #scope/shared #action/bind
 KEYBOARD_DIR_DELAY_MS = 180
 
+# Board waits this long after Up/Down onto a file before building the
+# preview. Clicks, multi-select, Right, and Enter skip this timer.
+#
+# @tags: #type/constant #format/int #scope/navigation #scope/widget #scope/shared #action/bind
+KEYBOARD_PREVIEW_DELAY_MS = 180
+
 # Column waits for directory-monitor events to settle before one reload.
 #
 # @tags: #type/constant #format/int #scope/widget #scope/file-ops #scope/shared #action/bind #side-effect/filesystem
-MONITOR_DEBOUNCE_MS = 200
+MONITOR_DEBOUNCE_MS = 180
 
 # Milliseconds between row-build slices so the main loop can paint and
 # poll keys between chunks.

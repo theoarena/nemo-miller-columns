@@ -17,9 +17,10 @@ class ConfigContractTest(unittest.TestCase):
     """Freeze the public knob values consumers rely on."""
 
     def test_timing_knobs(self):
-        self.assertEqual(config.NAVIGATE_DELAY_MS, 150)
+        self.assertEqual(config.NAVIGATE_DELAY_MS, 180)
         self.assertEqual(config.KEYBOARD_DIR_DELAY_MS, 180)
-        self.assertEqual(config.MONITOR_DEBOUNCE_MS, 200)
+        self.assertEqual(config.KEYBOARD_PREVIEW_DELAY_MS, 180)
+        self.assertEqual(config.MONITOR_DEBOUNCE_MS, 180)
         self.assertEqual(config.ROW_BUILD_INTERVAL_MS, 16)
         self.assertEqual(config.ROW_BUILD_CHUNK, 40)
 

@@ -35,7 +35,11 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
-from miller.config import BOARD_MIN_SIZE, KEYBOARD_DIR_DELAY_MS
+from miller.config import (
+    BOARD_MIN_SIZE,
+    KEYBOARD_DIR_DELAY_MS,
+    KEYBOARD_PREVIEW_DELAY_MS,
+)
 from miller.data import FileEntry
 from miller.theme import bind_accent_ink, install_theme
 from miller.ui.column import MillerColumn
@@ -246,14 +250,15 @@ class MillerColumnsView(Gtk.EventBox):
         column.focus_row()
 
     def flush_selection(self) -> None:
-        """Apply a keyboard folder open that is still waiting.
+        """Apply a keyboard folder open or file preview that is still waiting.
 
         Up/Down onto a directory waits ``KEYBOARD_DIR_DELAY_MS`` so keys
-        already queued collapse into one folder. Clicks, files, and
-        Right/Enter apply in the select handler, so this is a no-op unless
-        that wait is still pending. Tests call it to open the last folder
-        without sleeping.
-    
+        already queued collapse into one folder. Up/Down onto a file waits
+        ``KEYBOARD_PREVIEW_DELAY_MS`` before the preview is built. Clicks,
+        multi-select, and Right/Enter apply in the select handler, so this
+        is a no-op unless that wait is still pending. Tests call it to open
+        the last folder or show the last file preview without sleeping.
+
         @tags: #scope/navigation #action/bind #scope/widget #action/read #action/navigate #format/int #scope/shared
         """
         pending = self._pending
@@ -295,15 +300,15 @@ class MillerColumnsView(Gtk.EventBox):
         self._scroll_to_end()
 
     def _on_column_select(self, column: MillerColumn, entry: Optional[FileEntry]) -> None:
-        """Apply a click now, and wait only for a keyboard move onto a folder.
+        """Apply a click now, and wait for a keyboard move onto a row.
 
         Up/Down shares this callback with clicks. A folder reached by arrow
-        waits ``KEYBOARD_DIR_DELAY_MS`` (the next main-loop turn) so a
-        column that is still building rows is destroyed before another
-        slice runs. The row
-        highlight is already on the column; only the chain to the right waits.
-        A click, a file, Shift+extend, ``select_name``, Right, or Enter
-        cancels that wait and updates the chain in this call.
+        waits ``KEYBOARD_DIR_DELAY_MS`` so a column that is still building
+        rows is destroyed before another slice runs. A file reached by
+        arrow waits ``KEYBOARD_PREVIEW_DELAY_MS`` before the preview is
+        built. The row highlight is already on the column; only the chain
+        to the right waits. A click, Shift+extend, ``select_name``, Right,
+        or Enter cancels that wait and updates the chain in this call.
 
         @tags: #scope/navigation #action/bind #scope/widget #action/read #complexity/high #format/int #scope/shared
         """
@@ -314,15 +319,16 @@ class MillerColumnsView(Gtk.EventBox):
         # Read before ``_move_selection`` clears the flag. This callback runs
         # inside that try, and a later statement must not depend on it.
         keyboard = bool(getattr(column, "_keyboard_select", False))
-        # The accent follows the row immediately. Only a keyboard directory
-        # delays the listing.
+        # The accent follows the row immediately. Only keyboard Up/Down
+        # delays the listing or preview.
         self._mark_current_column(column)
-        if keyboard and entry is not None and entry.is_dir:
+        if keyboard and entry is not None:
             self._pending = (column, entry)
             if self._select_timer:
                 GLib.source_remove(self._select_timer)
             self._select_timer = GLib.timeout_add(
-                KEYBOARD_DIR_DELAY_MS, self._on_select_timeout
+                KEYBOARD_DIR_DELAY_MS if entry.is_dir else KEYBOARD_PREVIEW_DELAY_MS,
+                self._on_select_timeout,
             )
             return
         self._cancel_pending()
