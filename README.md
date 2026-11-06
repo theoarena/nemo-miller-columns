@@ -4,6 +4,8 @@ A sleek Nemo extension bringing Miller columns to your active window, packed wit
 
 The view runs in-process through GTK 3 and nemo-python.
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q2O42A6NTE)
+
 ![Miller columns in Nemo: a chain of folders and a preview of the selected file](preview.png)
 
 ## Install
