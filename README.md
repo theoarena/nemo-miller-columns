@@ -12,16 +12,20 @@ The view runs in-process through GTK 3 and nemo-python.
 From this repository:
 
 ```bash
-./install.sh --skip-deps
+./install.sh
 ```
 
-The script symlinks `nemo_miller_columns.py` into
+The script installs Nemo, nemo-python, and the GTK 3 introspection
+packages with apt when they are missing. It symlinks
+`nemo_miller_columns.py` into
 `~/.local/share/nemo-python/extensions` and quits Nemo so the extension
 reloads. Open Nemo again after it exits.
 
-Omit `--skip-deps` on a machine that does not yet have Nemo, nemo-python,
-or the GTK 3 introspection packages. The script then installs those
-packages with apt.
+If you already have these packages installed use:
+
+```bash
+./install.sh --skip-deps
+```
 
 ## Uninstall
 
@@ -29,8 +33,7 @@ packages with apt.
 ./install.sh --uninstall
 ```
 
-This removes the extension symlink and quits Nemo. Settings already stored
-by Nemo stay in place.
+This removes the extension symlink. Settings already stored by Nemo stay in place.
 
 ## Features
 
