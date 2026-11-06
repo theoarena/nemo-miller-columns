@@ -102,6 +102,9 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         # a user choice, so those signals are dropped unless this is set
         # around our own select_row call.
         self._selection_from_user = False
+        # True only while Up/Down is selecting a row. The board waits before
+        # listing that directory; a click leaves this clear and opens at once.
+        self._keyboard_select = False
         # 1 for a plain click, 2+ once a multi-press has started. The file
         # policy opens on the first release only.
         self._primary_presses = 0

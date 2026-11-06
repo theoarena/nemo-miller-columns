@@ -7,6 +7,9 @@ the column widths. The natural size still follows the columns.
 
 Selecting a directory appends one column and points the active path at
 that child, so the host path bar follows the folder that just opened.
+Up/Down onto a directory waits before that listing: ``list_directory`` runs
+on the GTK thread, and key repeat would otherwise open every folder the
+cursor only passed. A click, a file, and Right/Enter do not wait.
 Selecting a file, nothing, or several rows drops the columns to the right
 and points the active path at the column that holds the selection.
 ``focused_index`` is the directory Nemo was asked to show. The accent
@@ -34,9 +37,12 @@ from miller.theme import bind_accent_ink, install_theme
 from miller.ui.column import MillerColumn
 from miller.ui.preview import PreviewPane
 
-# One frame at 60Hz. Rapid cursor moves collapse into a single chain update.
-# @tags: #type/constant #scope/navigation
-_SELECTION_DELAY_MS = 16
+# Up/Down onto a directory waits this long before list_directory runs.
+# Key repeat is faster than a folder listing on the GTK thread, so a
+# shorter delay still opens folders the cursor only passed through.
+# Clicks and file rows do not use this timer.
+# @tags: #type/constant #scope/navigation #format/int
+_KEYBOARD_DIR_DELAY_MS = 180
 
 
 class FlexScrolledWindow(Gtk.ScrolledWindow):
@@ -235,14 +241,15 @@ class MillerColumnsView(Gtk.EventBox):
         column.focus_row()
 
     def flush_selection(self) -> None:
-        """Apply the pending selection now.
+        """Apply a keyboard folder open that is still waiting.
 
-        Column clicks are delayed by ``_SELECTION_DELAY_MS`` so a fast key
-        repeat does not rebuild the chain on every row. Tests and any host
-        that needs the chain immediately cancel that timer and apply the
-        latest selection.
+        Up/Down onto a directory waits ``_KEYBOARD_DIR_DELAY_MS`` so key
+        repeat does not list every folder it passes. Clicks, files, and
+        Right/Enter apply in the select handler, so this is a no-op unless
+        that wait is still pending. Tests call it to open the last folder
+        without sleeping.
     
-        @tags: #scope/navigation #action/bind #scope/widget
+        @tags: #scope/navigation #action/bind #scope/widget #action/read #action/navigate
         """
         pending = self._pending
         self._cancel_pending()
@@ -283,22 +290,37 @@ class MillerColumnsView(Gtk.EventBox):
         self._scroll_to_end()
 
     def _on_column_select(self, column: MillerColumn, entry: Optional[FileEntry]) -> None:
-        """_on_column_select.
+        """Apply a click now, and wait only for a keyboard move onto a folder.
 
-        @tags: #scope/navigation #action/bind #scope/widget
+        Up/Down shares this callback with clicks. Listing a directory blocks
+        the GTK thread, and key repeat is faster than that listing, so a
+        folder reached by arrow waits ``_KEYBOARD_DIR_DELAY_MS``. The row
+        highlight is already on the column; only the chain to the right waits.
+        A click, a file, Shift+extend, ``select_name``, Right, or Enter
+        cancels that wait and updates the chain in this call.
+
+        @tags: #scope/navigation #action/bind #scope/widget #action/read #complexity/high
         """
         # Auto-select while stepping into a column must not schedule a chain
-        # update. The flag is only set around that select, so a later click
-        # still goes through the timer.
+        # update. The flag is only set around that select.
         if self._suspend_chain or self._dead or getattr(column, "_dead", False):
             return
-        # The accent follows the click immediately. The column chain still
-        # waits for the selection timer so a key repeat does not rebuild it.
+        # Read before ``_move_selection`` clears the flag. This callback runs
+        # inside that try, and a later statement must not depend on it.
+        keyboard = bool(getattr(column, "_keyboard_select", False))
+        # The accent follows the row immediately. Only a keyboard directory
+        # delays the listing.
         self._mark_current_column(column)
-        self._pending = (column, entry)
-        if self._select_timer:
-            GLib.source_remove(self._select_timer)
-        self._select_timer = GLib.timeout_add(_SELECTION_DELAY_MS, self._on_select_timeout)
+        if keyboard and entry is not None and entry.is_dir:
+            self._pending = (column, entry)
+            if self._select_timer:
+                GLib.source_remove(self._select_timer)
+            self._select_timer = GLib.timeout_add(
+                _KEYBOARD_DIR_DELAY_MS, self._on_select_timeout
+            )
+            return
+        self._cancel_pending()
+        self._apply_selection(column, entry)
 
     def _on_select_timeout(self) -> bool:
         """_on_select_timeout.

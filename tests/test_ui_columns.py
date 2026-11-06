@@ -233,9 +233,18 @@ def _button_event(column, row, event_type, state=0):
 
 
 def _click_row(column, row):
-    """Press, pump, select, release, pump. Mirrors a ListBox that selects on release."""
+    """Press, pump, select, release, pump. Mirrors a ListBox that selects on release.
+
+    Multiple mode makes ``select_row`` add a row. A plain click replaces the
+    selection, so the previous rows are cleared without a notify first.
+    """
     column.listbox.emit("button-press-event", _button_event(column, row, Gdk.EventType.BUTTON_PRESS))
     pump()
+    column._suppress_select = True
+    try:
+        column.listbox.unselect_all()
+    finally:
+        column._suppress_select = False
     column.listbox.select_row(row)
     column.listbox.emit("button-release-event", _button_event(column, row, Gdk.EventType.BUTTON_RELEASE))
     pump()
@@ -469,6 +478,91 @@ class MillerColumnsUiTests(unittest.TestCase):
             self.assertEqual(len(view.columns), 1)
             self.assertEqual(view.preview_pane.get_title(), "note.txt")
             self.assertEqual(_current_columns(view), [view.columns[0]])
+
+    def test_keyboard_down_on_folder_waits_for_flush(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            alpha = os.path.join(tmp, "alpha")
+            os.makedirs(alpha)
+            with open(os.path.join(tmp, "note.txt"), "w", encoding="utf-8") as handle:
+                handle.write("n")
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            column.handle_key(Gdk.KEY_Down)
+            self.assertEqual(column.get_selected().name, "alpha")
+            self.assertFalse(column._keyboard_select)
+            self.assertEqual(len(view.columns), 1)
+            self.assertNotEqual(view._select_timer, 0)
+            self.assertEqual(view._pending[1].name, "alpha")
+            self.assertEqual(_current_columns(view), [column])
+            view.flush_selection()
+            self.assertEqual(view._select_timer, 0)
+            self.assertIsNone(view._pending)
+            self.assertEqual(len(view.columns), 2)
+            self.assertEqual(view.columns[1].directory_path, os.path.abspath(alpha))
+
+    def test_repeated_keyboard_down_opens_only_the_last_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            alpha = os.path.join(tmp, "alpha")
+            beta = os.path.join(tmp, "beta")
+            os.makedirs(alpha)
+            os.makedirs(beta)
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            column.handle_key(Gdk.KEY_Down)
+            column.handle_key(Gdk.KEY_KP_Down)
+            self.assertEqual(column.get_selected().name, "beta")
+            self.assertEqual(len(view.columns), 1)
+            self.assertEqual(view._pending[1].name, "beta")
+            view.flush_selection()
+            self.assertEqual(len(view.columns), 2)
+            self.assertEqual(view.columns[1].directory_path, os.path.abspath(beta))
+
+    def test_folder_click_appends_without_flush(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = os.path.join(tmp, "sub")
+            os.makedirs(sub)
+            view = self.mount(MillerColumnsView(tmp))
+            _click_row(view.columns[0], _row_named(view.columns[0], "sub"))
+            self.assertEqual(len(view.columns), 2)
+            self.assertEqual(view.columns[1].directory_path, os.path.abspath(sub))
+            self.assertEqual(view._select_timer, 0)
+            self.assertIsNone(view._pending)
+
+    def test_keyboard_down_onto_file_previews_without_flush(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "alpha"))
+            with open(os.path.join(tmp, "note.txt"), "w", encoding="utf-8") as handle:
+                handle.write("hello")
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            column.handle_key(Gdk.KEY_Down)
+            self.assertEqual(column.get_selected().name, "alpha")
+            self.assertEqual(len(view.columns), 1)
+            column.handle_key(Gdk.KEY_Down)
+            self.assertEqual(column.get_selected().name, "note.txt")
+            self.assertEqual(view.preview_pane.get_title(), "note.txt")
+            self.assertEqual(len(view.columns), 1)
+            self.assertEqual(view._select_timer, 0)
+            self.assertIsNone(view._pending)
+
+    def test_click_cancels_pending_keyboard_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            alpha = os.path.join(tmp, "alpha")
+            beta = os.path.join(tmp, "beta")
+            os.makedirs(alpha)
+            os.makedirs(beta)
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            column.handle_key(Gdk.KEY_Down)
+            self.assertEqual(view._pending[1].name, "alpha")
+            self.assertEqual(len(view.columns), 1)
+            _click_row(column, _row_named(column, "beta"))
+            self.assertEqual(len(view.columns), 2)
+            self.assertEqual(view.columns[1].directory_path, os.path.abspath(beta))
+            self.assertEqual(view._select_timer, 0)
+            self.assertIsNone(view._pending)
+            view.flush_selection()
+            self.assertEqual(view.columns[1].directory_path, os.path.abspath(beta))
 
     def test_png_preview_kind_is_image(self):
         with tempfile.TemporaryDirectory() as tmp:

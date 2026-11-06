@@ -444,9 +444,17 @@ class ColumnInputMixin:
                 _column_module().open_file_default(entry.path)
 
     def _move_selection(self, delta: int) -> None:
-        """_move_selection.
+        """Move the single selection by ``delta`` rows.
 
-        @tags: #scope/navigation #action/read #action/bind #scope/widget #type/helper
+        ``_keyboard_select`` is set only around the select so the board can
+        wait before listing a directory. Clicks and ``select_name`` leave the
+        flag clear and open at once. The highlight itself is not delayed.
+        Keypad Up/Down use this same path.
+
+        Args:
+            delta: ``-1`` toward the top, ``1`` toward the bottom.
+
+        @tags: #scope/navigation #action/read #action/bind #scope/widget #type/helper #action/write
         """
         rows = self._visible_real_rows()
         if not rows:
@@ -459,7 +467,11 @@ class ColumnInputMixin:
             if index < 0 or index >= len(rows):
                 return
             target = rows[index]
-        self._user_select_row(target)
+        self._keyboard_select = True
+        try:
+            self._user_select_row(target)
+        finally:
+            self._keyboard_select = False
 
     def _extend_selection(self, delta: int) -> None:
         """Grow the selection from the anchor toward ``delta``.
