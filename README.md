@@ -57,3 +57,6 @@ applies to the window and is not written onto the folder.
 
 The interface default language is English.
 New languages can be added in [`translations/`](translations/).
+
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q2O42A6NTE)
