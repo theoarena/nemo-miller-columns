@@ -1,14 +1,14 @@
 """Nemo extension that packs Miller Columns into the active window slot.
 
 Nemo asks every ``LocationWidgetProvider`` for a widget on each navigation
-and drops whatever comes back into ``extra_location_widgets``. The dashboard
-extension collapses that box, so this provider always returns None and packs
+and drops whatever comes back into ``extra_location_widgets``. Another
+provider collapses that box, so this provider always returns None and packs
 ``MillerColumnsView`` (a ``Gtk.EventBox``) directly onto the slot instead.
 
 A ``show`` handler on the slot's ``Gtk.Overlay`` hides it again while Miller
 is active. The hide is scheduled at ``GLib.PRIORITY_HIGH_IDLE``, before GTK
-paints. The dashboard helper skips its own ``show()`` when the slot is
-already marked ``_miller_active``.
+paints. Other code may read ``_miller_active`` and skip its own ``show()``
+when the slot is already marked.
 
 Arrow keys move the board immediately. Nemo is asked to follow once, after
 ``_NAVIGATE_DELAY_MS`` of quiet, and only while that slot is the active tab.
@@ -17,8 +17,9 @@ does not move the board.
 
 Navigation, the session flag, and the board live on the slot. Switching
 tabs restores that slot instead of rebuilding whichever slot currently
-holds a view. ``~/.dashboard`` is handled before any of that packing. The
-home panel owns that location.
+holds a view. A reserved location is handled before any of that packing.
+The directory is marked on disk; this extension only reads the attribute
+and does not take the slot.
 
 Used by: nemo-python, loaded from ``nemo_miller_columns.py``.
 See also: ``miller.ui.board.MillerColumnsView``, ``miller.data``.
@@ -107,8 +108,8 @@ def _hide_overlay_later(overlay: Gtk.Overlay) -> bool:
 def _on_overlay_show(overlay: Gtk.Overlay, slot: Gtk.Box) -> None:
     """Schedule a hide when Miller still owns this slot.
 
-    The dashboard helper calls ``show()`` on every overlay while restoring
-    a normal folder. Hiding synchronously here does not stick. The idle
+    Other code calls ``show()`` on every overlay while restoring a normal
+    folder. Hiding synchronously here does not stick. The idle
     uses ``GLib.PRIORITY_HIGH_IDLE`` so the hide lands before
     ``Gdk.PRIORITY_REDRAW``.
 
@@ -126,8 +127,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
     """Packs the Miller column board onto a Nemo window slot.
 
     The board is not returned from ``get_widget``. Nemo would parent a
-    returned widget in ``extra_location_widgets``, and the dashboard helper
-    treats every non-toolbar ``Gtk.Box`` in that slot as that box.
+    returned widget in ``extra_location_widgets``, and other code treats
+    every non-toolbar ``Gtk.Box`` in that slot as that box.
 
     Attributes:
         None. nemo-python keeps one extension instance for every window.
@@ -147,8 +148,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         """Prepare the slot for ``uri`` and return no location widget.
 
         Called when the location really changes, not on a tab switch. The
-        slot is the one that just emitted ``location-changed``. A dashboard
-        URI, a non-directory, or a folder whose preference is off leaves
+        slot is the one that just emitted ``location-changed``. A reserved
+        location, a non-directory, or a folder whose preference is off leaves
         the native view in place on that slot only.
 
         The session flag is per slot and is only read here. Navigation
@@ -181,12 +182,13 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             self._bind_slot(existing)
         reported = self._uri_path(uri)
         slot = self._slot_for_uri(window, reported)
-        if data.is_dashboard_uri(uri):
+        if data.is_reserved_location(uri):
             path = None
         else:
             path = self._local_directory(uri)
         # Echo: Nemo reporting a path this slot already emitted. Anything
-        # else, including the dashboard, is the user going somewhere themselves.
+        # else, including a reserved location, is the user going somewhere
+        # themselves.
         inflight = self._navigation_inflight(slot) if slot is not None else set()
         echo = path is not None and path in inflight
         if echo:
@@ -194,8 +196,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         elif slot is not None:
             self._reset_navigation(slot)
         if path is None:
-            if data.is_dashboard_uri(uri):
-                self._leave_dashboard(window, slot)
+            if data.is_reserved_location(uri):
+                self._leave_reserved(window, slot, uri)
             else:
                 self._leave_non_directory(window, slot)
             return None
@@ -223,9 +225,9 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
 
         Ctrl+4 (and keypad 4) turns Miller on for a normal directory.
         Ctrl+1, Ctrl+2, and Ctrl+3 turn it off and let Nemo's own view
-        buttons win. The same chords on ``~/.dashboard`` or a non-directory
-        are consumed and change nothing, matching the native view buttons
-        on the home panel.
+        buttons win. The same chords on a reserved location or a
+        non-directory are consumed and change nothing, so a view preference
+        is not stored there.
 
         Args:
             window: Window that received the event.
@@ -636,8 +638,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         """Apply a click on the Miller button.
 
         Programmatic ``set_active`` holds ``_miller_button_lock`` and must
-        not be stored as a user choice. A dashboard URI or a non-directory
-        cannot host the view, so the button is forced back off.
+        not be stored as a user choice. A reserved location or a
+        non-directory cannot host the view, so the button is forced back off.
 
         @tags: #scope/view-preference #scope/slot-lifecycle #action/toggle
         """
@@ -652,8 +654,8 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
     def _on_native_toggled(self, window: Gtk.Window, button) -> None:
         """Turn Miller off when a native view button becomes active.
 
-        The dashboard location ignores these buttons the same way Nemo's
-        own view buttons do nothing there. A button that is turning off
+        A reserved location is not a column host, so these buttons must
+        not be stored as a Miller choice. A button that is turning off
         is the other half of a radio group and is not a new choice.
 
         Tab activation sets ``_miller_view_sync`` while Nemo syncs the
@@ -765,20 +767,28 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         finally:
             window._miller_button_lock = False
 
-    def _leave_dashboard(self, window: Gtk.Window, slot: Gtk.Box | None) -> None:
-        """Drop Miller on the slot that opened the panel.
+    def _leave_reserved(self, window: Gtk.Window, slot: Gtk.Box | None, uri: str) -> None:
+        """Drop Miller on the slot that opened a reserved location.
 
-        Other tabs keep their boards. The widget sitting in ``extra_box``
-        belongs to the dashboard extension. This path does not hide,
-        remove, or pack into that box. The toolbar moves only when this
-        slot is the one on screen.
+        A reserved directory is a real directory and still not a column
+        host: another view already occupies it. Deactivating only this
+        slot leaves every other tab's board in place. The widget sitting
+        in ``extra_location_widgets`` stays untouched. The resolved local
+        path is stored on ``slot._miller_uri`` so later checks recognize
+        the same directory. The toolbar moves only when this slot is the
+        one on screen.
 
-        @tags: #scope/slot-lifecycle #scope/navigation #action/toggle
+        Args:
+            window: Host window.
+            slot: Slot that navigated here, or None when none resolved.
+            uri: Location Nemo reported. Stored as a local path.
+
+        @tags: #scope/slot-lifecycle #scope/navigation #action/toggle #action/clear #lifecycle/destroy
         """
         if slot is not None:
             if getattr(slot, "_miller_active", False):
                 self._deactivate(slot)
-            slot._miller_uri = data.DASHBOARD_PATH
+            slot._miller_uri = self._uri_path(uri)
         if slot is None or slot is self._active_slot(window):
             self._set_toggle_active(window, False)
 
@@ -836,7 +846,7 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
             )
             slot._miller_view = view
             # EventBox, not Box. A Box wrapper would be detected as
-            # extra_location_widgets and collapsed by the dashboard helper.
+            # extra_location_widgets and collapsed by other code.
             slot.pack_start(view, True, True, 0)
             self._attach_hidden_sync(view)
         elif reposition:
@@ -1099,15 +1109,16 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
     def _is_normal_directory(self, window: Gtk.Window) -> bool:
         """Return whether the active slot can show Miller columns.
 
-        The dashboard path is a directory on disk and is still rejected:
-        the home panel owns it. A missing URI (trash, recent) is rejected
-        with the same answer.
+        A reserved location is a directory on disk and is still rejected:
+        columns must not replace the view that directory already hosts,
+        and a shortcut must not store a preference there. A missing URI
+        (trash, recent) is rejected with the same answer.
 
         @tags: #scope/navigation #scope/view-preference #action/read
         """
         slot = self._active_slot(window)
         path = getattr(slot, "_miller_uri", None) if slot is not None else None
-        if not path or data.is_dashboard_uri(path):
+        if not path or data.is_reserved_location(path):
             return False
         return os.path.isdir(path)
 

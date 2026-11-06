@@ -25,10 +25,11 @@ from miller.listing import _local_path
 # @tags: #type/constant #scope/view-preference #side-effect/filesystem
 METADATA_KEY: str = "metadata::nemo-miller-columns-view"
 
-# Home panel treats this directory as a special location. Compared as a
-# real path so a URI and a trailing slash still match.
-# @tags: #type/constant #scope/navigation
-DASHBOARD_PATH: str = os.path.abspath(os.path.expanduser("~/.dashboard"))
+# Set on a directory that already hosts another view. Miller reads it
+# and does not pack columns or store a view choice there. The writer
+# lives outside this package.
+# @tags: #type/constant #scope/view-preference #scope/navigation #side-effect/filesystem
+RESERVED_VIEW_KEY: str = "metadata::nemo-reserved-view"
 
 # JSON map of absolute path -> bool. ``store_path`` overrides this so tests
 # never touch the user's real config.
@@ -39,24 +40,29 @@ DEFAULT_STORE_PATH: str = os.path.abspath(
 
 
 
-def is_dashboard_uri(uri_or_path: str) -> bool:
-    """Return whether ``uri_or_path`` is the Home dashboard directory.
+def is_reserved_location(uri_or_path: str) -> bool:
+    """Return whether ``uri_or_path`` is marked as a reserved location.
 
-    Accepts a local path, a ``file://`` URI, or a trailing slash. A child
-    such as ``~/.dashboard/extra`` is not the dashboard itself.
+    A reserved directory is still a real directory. It is not a column
+    host: another view already owns it, and storing a Miller preference
+    there would write a choice the user cannot see. The mark is
+    ``RESERVED_VIEW_KEY`` set to the exact string ``true``. A child has
+    no attribute of its own, so it stays a normal folder. A missing
+    attribute or ``GLib.Error`` is not reserved.
 
     Args:
-        uri_or_path: Path or URI to test.
+        uri_or_path: Local path or ``file://`` URI. A trailing slash is
+            the same directory.
 
     Returns:
-        True only for the dashboard directory.
+        True only when the attribute is exactly ``true``.
 
-    @tags: #scope/navigation #action/read
+    @tags: #type/helper #scope/navigation #scope/view-preference #action/read #side-effect/filesystem
     """
     local = _local_path(uri_or_path)
     if local is None:
         return False
-    return local == DASHBOARD_PATH
+    return _read_view_attribute(local, RESERVED_VIEW_KEY) == "true"
 
 
 def resolve_miller_view_preferred(
@@ -221,22 +227,26 @@ def _explicit_preference(path: str, store: dict) -> Optional[bool]:
     return None
 
 
-def _read_view_attribute(path: str) -> Optional[str]:
-    """Read ``METADATA_KEY`` from folder extended attributes.
+def _read_view_attribute(path: str, key: str = METADATA_KEY) -> Optional[str]:
+    """Read one folder attribute.
+
+    ``key`` defaults to ``METADATA_KEY``. A missing attribute or
+    ``GLib.Error`` means the folder has no explicit value. Callers that
+    only treat ``true`` and ``false`` as choices ignore every other string.
 
     @tags: #scope/view-preference #action/read #side-effect/filesystem
     """
     try:
         info = Gio.File.new_for_path(path).query_info(
-            METADATA_KEY,
+            key,
             Gio.FileQueryInfoFlags.NONE,
             None,
         )
     except GLib.Error:
         return None
-    if not info.has_attribute(METADATA_KEY):
+    if not info.has_attribute(key):
         return None
-    return info.get_attribute_string(METADATA_KEY)
+    return info.get_attribute_string(key)
 
 
 def _resolve_store_path(store_path: Optional[str]) -> str:

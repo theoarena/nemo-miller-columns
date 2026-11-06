@@ -41,11 +41,11 @@ from miller.listing import (
     list_directory,
 )
 from miller.preference import (
-    DASHBOARD_PATH,
     DEFAULT_STORE_PATH,
     METADATA_KEY,
+    RESERVED_VIEW_KEY,
     _preference_flags,
-    is_dashboard_uri,
+    is_reserved_location,
     resolve_miller_view_preferred,
     set_miller_view_preferred,
 )
@@ -84,9 +84,9 @@ from miller.transfer import (
 )
 
 __all__ = [
-    "DASHBOARD_PATH",
     "DEFAULT_STORE_PATH",
     "METADATA_KEY",
+    "RESERVED_VIEW_KEY",
     "FileEntry",
     "MenuTarget",
     "NemoAction",
@@ -106,7 +106,7 @@ __all__ = [
     "format_size",
     "format_uri_list",
     "get_file_metadata",
-    "is_dashboard_uri",
+    "is_reserved_location",
     "launch_with_app",
     "list_directory",
     "open_file_default",

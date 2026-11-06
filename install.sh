@@ -2,8 +2,7 @@
 # Link the Miller Columns extension into the per-user nemo-python directory.
 #
 # The Python file is imported by nemo-python, so it does not need an
-# executable bit. Uninstall removes only this symlink. Dashboard files,
-# bookmarks, desktop files, and dbus services stay where they are.
+# executable bit. Uninstall removes only this symlink.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

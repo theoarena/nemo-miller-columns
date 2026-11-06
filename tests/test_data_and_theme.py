@@ -19,16 +19,16 @@ from gi.repository import Gdk, GLib, GObject, Gio, Gtk
 
 import miller
 from miller.data import (
-    DASHBOARD_PATH,
     DEFAULT_STORE_PATH,
     METADATA_KEY,
+    RESERVED_VIEW_KEY,
     choose_drop_action,
     create_subfolder,
     filter_drop_uris,
     format_gnome_copied_files,
     format_uri_list,
     get_file_metadata,
-    is_dashboard_uri,
+    is_reserved_location,
     launch_with_app,
     list_directory,
     open_in_same_window,
@@ -202,7 +202,8 @@ class DataAndThemeTests(unittest.TestCase):
         self.assertEqual(miller.__version__, "0.1.0")
         self.assertEqual(miller.METADATA_KEY, METADATA_KEY)
         self.assertEqual(miller.METADATA_KEY, "metadata::nemo-miller-columns-view")
-        self.assertEqual(miller.DASHBOARD_PATH, DASHBOARD_PATH)
+        self.assertEqual(miller.RESERVED_VIEW_KEY, RESERVED_VIEW_KEY)
+        self.assertEqual(miller.RESERVED_VIEW_KEY, "metadata::nemo-reserved-view")
         self.assertEqual(
             DEFAULT_STORE_PATH,
             os.path.abspath(os.path.expanduser("~/.config/nemo-miller-columns/folder_views.json")),
@@ -474,13 +475,22 @@ class DataAndThemeTests(unittest.TestCase):
             with open(source_path, encoding="utf-8") as handle:
                 self.assertNotIn("nemo-default-view", handle.read(), name)
 
-    def test_is_dashboard_uri(self):
-        self.assertTrue(is_dashboard_uri("~/.dashboard"))
-        self.assertTrue(is_dashboard_uri(DASHBOARD_PATH))
-        self.assertTrue(is_dashboard_uri("file://" + DASHBOARD_PATH))
-        self.assertTrue(is_dashboard_uri(DASHBOARD_PATH + "/"))
-        self.assertFalse(is_dashboard_uri(os.path.dirname(DASHBOARD_PATH)))
-        self.assertFalse(is_dashboard_uri(DASHBOARD_PATH + "/extra"))
+    def test_is_reserved_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reserved = os.path.join(tmp, "reserved")
+            child = os.path.join(reserved, "child")
+            os.makedirs(child)
+            Gio.File.new_for_path(reserved).set_attribute_string(
+                RESERVED_VIEW_KEY,
+                "true",
+                Gio.FileQueryInfoFlags.NONE,
+                None,
+            )
+            self.assertTrue(is_reserved_location(reserved))
+            self.assertTrue(is_reserved_location("file://" + reserved))
+            self.assertTrue(is_reserved_location(reserved + "/"))
+            self.assertFalse(is_reserved_location(tmp))
+            self.assertFalse(is_reserved_location(child))
 
     def test_create_subfolder_and_rename(self):
         with tempfile.TemporaryDirectory() as tmp:

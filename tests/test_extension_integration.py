@@ -335,14 +335,20 @@ class ExtensionIntegrationTests(unittest.TestCase):
         self.assertIsInstance(self.slot._miller_view, MillerColumnsView)
         self.assertFalse(self.overlay.get_visible())
 
-    def test_dashboard_is_left_alone(self):
-        dashboard_uri = "file://" + data.DASHBOARD_PATH
-        self.assertTrue(data.is_dashboard_uri(dashboard_uri))
+    def test_reserved_location_is_left_alone(self):
+        reserved = self._make_dir("reserved")
+        Gio.File.new_for_path(reserved).set_attribute_string(
+            data.RESERVED_VIEW_KEY,
+            "true",
+            Gio.FileQueryInfoFlags.NONE,
+            None,
+        )
+        reserved_uri = self._uri(reserved)
+        self.assertTrue(data.is_reserved_location(reserved_uri))
         children = list(self.extra.get_children())
-        self.assertIsNone(self.ext.get_widget(dashboard_uri, self.window))
-        tilde = "~/.dashboard"
-        if data.is_dashboard_uri(tilde):
-            self.assertIsNone(self.ext.get_widget(tilde, self.window))
+        self.assertIsNone(self.ext.get_widget(reserved_uri, self.window))
+        self.assertIsNone(self.ext.get_widget(reserved + "/", self.window))
+        self.assertEqual(self.slot._miller_uri, os.path.abspath(reserved))
         self.assertIsNone(getattr(self.slot, "_miller_view", None))
         self.assertTrue(self.overlay.get_visible())
         self.assertEqual(list(self.extra.get_children()), children)
@@ -354,24 +360,22 @@ class ExtensionIntegrationTests(unittest.TestCase):
         self.window._miller_toggle.set_active(True)
         self.assertFalse(self.window._miller_toggle.get_active())
         self.assertIsNone(getattr(self.slot, "_miller_view", None))
+        if os.path.exists(data.DEFAULT_STORE_PATH):
+            self.assertNotIn(os.path.abspath(reserved), self._store())
+        child = self._make_dir("reserved/child")
+        data.set_miller_view_preferred(child, True)
+        self.assertIsNone(self.ext.get_widget(self._uri(child), self.window))
+        self.assertIsInstance(self.slot._miller_view, MillerColumnsView)
 
-    def test_dashboard_show_guard_keeps_overlay_hidden(self):
-        dashboard_root = "/home/theoarena/Dev/nemo/dashboard"
-        if dashboard_root not in sys.path:
-            sys.path.insert(0, dashboard_root)
-        try:
-            from nemo_dashboard import DashboardLocationWidgetProvider
-        except Exception as error:
-            raise AssertionError(
-                "ESCALATE: cannot import DashboardLocationWidgetProvider"
-            ) from error
+    def test_show_guard_keeps_overlay_hidden(self):
         folder = self._make_dir("guarded")
         data.set_miller_view_preferred(folder, True)
         self.ext.get_widget(self._uri(folder), self.window)
         view = self.slot._miller_view
         self.assertIsInstance(view, MillerColumnsView)
         self.assertFalse(self.overlay.get_visible())
-        DashboardLocationWidgetProvider._ensure_normal_slots_visible(self.window)
+        self.overlay.show()
+        pump()
         self.assertFalse(self.overlay.get_visible())
         self.assertTrue(view.get_visible())
         self.assertIs(self.slot._miller_view, view)
@@ -1042,7 +1046,6 @@ class InstallScriptTests(unittest.TestCase):
         with open(log_path, encoding="utf-8") as handle:
             installed = handle.read()
         self.assertIn("-q", installed)
-        self.assertFalse(os.path.exists(os.path.join(home.name, ".dashboard")))
         subprocess.run([script, "--uninstall"], check=True, env=env)
         self.assertFalse(os.path.lexists(link))
         with open(log_path, encoding="utf-8") as handle:
