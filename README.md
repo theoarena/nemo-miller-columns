@@ -1,8 +1,7 @@
 # Miller Columns for Nemo
 
-Miller Columns is a Nemo extension for a Miller columns view. It is focused
-on speed and usability, and it delivers Miller column navigation in the
-current window, with a preview of the selected file.
+A Nemo extension that brings column-based file browsing directly to your current window, 
+featuring instant file previews and a strong focus on speed and usability.
 
 The view runs in-process through GTK 3 and nemo-python.
 
