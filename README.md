@@ -10,23 +10,15 @@ The view runs in-process through GTK 3 and nemo-python.
 
 ## Install
 
-From this repository:
+You can install by double-clicking `install.sh` in Nemo (choose **Run** or **Run in Terminal**) or from a terminal:
 
 ```bash
 ./install.sh
 ```
 
-The script installs Nemo, nemo-python, and the GTK 3 introspection
-packages with apt when they are missing. It symlinks
-`nemo_miller_columns.py` into
-`~/.local/share/nemo-python/extensions` and quits Nemo so the extension
-reloads. Open Nemo again after it exits.
+The installer opens a terminal if needed, checks and installs missing system dependencies (Nemo, `nemo-python`, and GTK 3 introspection packages), copies `nemo_miller_columns.py`, `miller/`, and `translations/` into `~/.local/share/nemo-python/extensions`, and restarts Nemo so the extension loads.
 
-If you already have these packages installed use:
-
-```bash
-./install.sh --skip-deps
-```
+Once installed, you can safely delete the downloaded folder.
 
 ## Uninstall
 
@@ -34,7 +26,7 @@ If you already have these packages installed use:
 ./install.sh --uninstall
 ```
 
-This removes the extension symlink. Settings already stored by Nemo stay in place.
+This removes the installed extension files from `~/.local/share/nemo-python/extensions`. Settings already stored by Nemo stay in place.
 
 ## Features
 

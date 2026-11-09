@@ -1148,9 +1148,9 @@ class ExtensionIntegrationTests(unittest.TestCase):
             column_module.paste_from_clipboard = original_paste
 
 class InstallScriptTests(unittest.TestCase):
-    """install.sh links the extension and removes only that symlink."""
+    """install.sh copies or links the extension and removes it cleanly."""
 
-    def test_install_and_uninstall_with_fake_nemo(self):
+    def _make_fake_env(self):
         home = tempfile.TemporaryDirectory()
         bindir = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
@@ -1172,11 +1172,67 @@ class InstallScriptTests(unittest.TestCase):
         env["HOME"] = home.name
         env["PATH"] = bindir.name + os.pathsep + env.get("PATH", "")
         env["NEMO_LOG"] = log_path
+        env["MILLER_IN_TERMINAL"] = "1"
+        return home.name, log_path, env
+
+    def test_install_copies_files_and_uninstalls_with_fake_nemo(self):
+        home_dir, log_path, env = self._make_fake_env()
         script = os.path.join(ROOT, "install.sh")
         self.assertTrue(os.access(script, os.X_OK))
-        subprocess.run([script, "--skip-deps"], check=True, env=env)
+        subprocess.run(
+            [script, "--skip-deps"],
+            check=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        ext_dir = os.path.join(
+            home_dir,
+            ".local",
+            "share",
+            "nemo-python",
+            "extensions",
+        )
+        entry = os.path.join(ext_dir, "nemo_miller_columns.py")
+        pkg = os.path.join(ext_dir, "miller")
+        i18n = os.path.join(ext_dir, "translations")
+        self.assertTrue(os.path.isfile(entry))
+        self.assertFalse(os.path.islink(entry))
+        self.assertTrue(os.path.isdir(pkg))
+        self.assertTrue(os.path.isfile(os.path.join(pkg, "i18n.py")))
+        self.assertTrue(os.path.isdir(i18n))
+        with open(log_path, encoding="utf-8") as handle:
+            installed = handle.read()
+        self.assertIn("-q", installed)
+        subprocess.run(
+            [script, "--uninstall"],
+            check=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertFalse(os.path.lexists(entry))
+        self.assertFalse(os.path.lexists(pkg))
+        self.assertFalse(os.path.lexists(i18n))
+        with open(log_path, encoding="utf-8") as handle:
+            removed = handle.read()
+        self.assertGreaterEqual(removed.count("-q"), 2)
+
+    def test_install_link_mode_and_uninstall_with_fake_nemo(self):
+        home_dir, log_path, env = self._make_fake_env()
+        script = os.path.join(ROOT, "install.sh")
+        subprocess.run(
+            [script, "--skip-deps", "--link"],
+            check=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         link = os.path.join(
-            home.name,
+            home_dir,
             ".local",
             "share",
             "nemo-python",
@@ -1188,14 +1244,49 @@ class InstallScriptTests(unittest.TestCase):
             os.path.realpath(link),
             os.path.realpath(os.path.join(ROOT, "nemo_miller_columns.py")),
         )
-        with open(log_path, encoding="utf-8") as handle:
-            installed = handle.read()
-        self.assertIn("-q", installed)
-        subprocess.run([script, "--uninstall"], check=True, env=env)
+        subprocess.run(
+            [script, "--uninstall"],
+            check=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         self.assertFalse(os.path.lexists(link))
-        with open(log_path, encoding="utf-8") as handle:
-            removed = handle.read()
-        self.assertGreaterEqual(removed.count("-q"), 2)
+
+    def test_relaunch_in_terminal_when_no_tty(self):
+        home_dir, _, env = self._make_fake_env()
+        env.pop("MILLER_IN_TERMINAL", None)
+        env["DISPLAY"] = ":0"
+        bindir = os.path.dirname(env["NEMO_LOG"])
+        term_log = os.path.join(bindir, "term.log")
+        env["TERM_LOG"] = term_log
+        term_path = os.path.join(bindir, "x-terminal-emulator")
+        with open(term_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    printf '%s\\n' "$*" >> "$TERM_LOG"
+                    exit 0
+                    """
+                )
+            )
+        os.chmod(term_path, 0o755)
+        script = os.path.join(ROOT, "install.sh")
+        subprocess.run(
+            [script, "--skip-deps"],
+            check=True,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        with open(term_log, encoding="utf-8") as handle:
+            launched = handle.read()
+        self.assertIn("install.sh", launched)
+        self.assertIn("--skip-deps", launched)
 
 
 class ExtensionSourceTests(unittest.TestCase):
