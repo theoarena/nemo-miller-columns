@@ -33,7 +33,7 @@ from gi.repository import Gtk
 # ``copy_to_clipboard``, ``open_file_default`` and ``show_item_properties``
 # stay bound here: UI tests replace them, and the mixins read this module
 # back at call time.
-from miller.config import COLUMN_WIDTH
+from miller.config import COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH, COLUMN_WIDTH
 from miller.data import (
     FileEntry,
     copy_to_clipboard,
@@ -99,6 +99,17 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         self.open_in_new_tab: Optional[Callable[[str], None]] = None
         self.open_in_new_window: Optional[Callable[[str], None]] = None
         self.file_click_policy: Optional[Callable[[], str]] = None
+        # Width hooks wired by the board: ``on_width_changed(column, width)``
+        # fires once per finished drag (``None`` = reset to default) and
+        # ``on_resize_state(active)`` brackets a drag so the board keeps the
+        # horizontal scroll where it is. Attributes, not constructor args,
+        # so the constructor signature stays stable.
+        self.on_width_changed: Optional[Callable[[MillerColumn, Optional[int]], None]] = None
+        self.on_resize_state: Optional[Callable[[bool], None]] = None
+        self._column_width = COLUMN_WIDTH
+        self._resize_dragging = False
+        self._resize_start_x_root = 0.0
+        self._resize_start_width = COLUMN_WIDTH
 
         self._rebuilding = False
         self._dead = False
@@ -130,7 +141,7 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         self._pending_paste_name: str | None = None
 
         self.get_style_context().add_class("mc-column")
-        self.set_size_request(COLUMN_WIDTH, -1)
+        self.set_column_width(COLUMN_WIDTH)
         self.set_hexpand(False)
         self.set_vexpand(True)
         self.set_valign(Gtk.Align.FILL)
@@ -149,6 +160,30 @@ class MillerColumn(Gtk.Box, ColumnListMixin, ColumnInputMixin, ColumnMenuMixin):
         self._chunk_index = 0
         self._load_async()
         self._start_directory_monitor()
+
+    def get_column_width(self) -> int:
+        """Return the column's current width in pixels.
+
+        @tags: #scope/widget #action/read #format/int
+        """
+        return self._column_width
+
+    def set_column_width(self, width: int) -> None:
+        """Size the column to ``width``, clamped to the allowed bounds.
+
+        Does not persist or notify: the board owns persistence.
+
+        @tags: #scope/widget #action/render #format/int #type/helper
+        """
+        self._column_width = max(COLUMN_MIN_WIDTH, min(COLUMN_MAX_WIDTH, int(width)))
+        self.set_size_request(self._column_width, -1)
+
+    def reset_column_width(self) -> None:
+        """Return to ``COLUMN_WIDTH`` without persisting.
+
+        @tags: #scope/widget #action/clear #format/int #type/helper
+        """
+        self.set_column_width(COLUMN_WIDTH)
 
     def delete_selected(self) -> None:
         """Move every selected entry to the trash and reload.

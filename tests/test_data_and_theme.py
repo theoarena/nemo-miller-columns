@@ -47,6 +47,7 @@ from miller.data import (
     transfer_uris,
     trash_entry,
 )
+import miller.config as miller_config
 import miller.data as data_module
 import miller.preference as preference_module
 from miller.clipboard import _read_gnome_clipboard, _set_clipboard_targets
@@ -227,6 +228,84 @@ def _file_info(name: str, file_type: Gio.FileType) -> Gio.FileInfo:
     info.set_name(name)
     info.set_file_type(file_type)
     return info
+
+
+class ColumnWidthPreferenceTests(unittest.TestCase):
+    """Per-folder width store: clamping, reset, metadata priority, cache."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = os.path.join(self.tmp.name, "widths.json")
+        self.folder = os.path.join(self.tmp.name, "folder")
+        os.makedirs(self.folder)
+        self._old_flags = data_module._preference_flags
+        data_module._preference_flags = lambda ignore, inherit: (bool(ignore), False)
+        self.addCleanup(setattr, data_module, "_preference_flags", self._old_flags)
+        preference_module._reset_caches()
+
+    def test_default_without_record(self):
+        self.assertEqual(
+            data_module.resolve_column_width(self.folder, store_path=self.store, ignore_metadata=False),
+            miller_config.COLUMN_WIDTH,
+        )
+
+    def test_roundtrip_and_no_parent_walk(self):
+        child = os.path.join(self.folder, "child")
+        os.makedirs(child)
+        data_module.set_column_width(self.folder, 333, store_path=self.store)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), 333)
+        self.assertEqual(data_module.resolve_column_width(child, self.store, False), miller_config.COLUMN_WIDTH)
+
+    def test_clamps_on_write_and_read(self):
+        data_module.set_column_width(self.folder, 10, store_path=self.store)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), miller_config.COLUMN_MIN_WIDTH)
+        data_module.set_column_width(self.folder, 5000, store_path=self.store)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), miller_config.COLUMN_MAX_WIDTH)
+        preference_module._reset_caches()
+        with open(self.store, "w", encoding="utf-8") as handle:
+            json.dump({self.folder: 9999}, handle)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), miller_config.COLUMN_MAX_WIDTH)
+
+    def test_none_resets(self):
+        data_module.set_column_width(self.folder, 400, store_path=self.store)
+        data_module.set_column_width(self.folder, None, store_path=self.store)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), miller_config.COLUMN_WIDTH)
+        with open(self.store, encoding="utf-8") as handle:
+            self.assertNotIn(self.folder, json.load(handle))
+
+    def test_ignore_metadata_returns_default(self):
+        data_module.set_column_width(self.folder, 400, store_path=self.store)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, True), miller_config.COLUMN_WIDTH)
+
+    def test_attribute_beats_store(self):
+        data_module.set_column_width(self.folder, 300, store_path=self.store)
+        try:
+            Gio.File.new_for_path(self.folder).set_attribute_string(
+                data_module.WIDTH_METADATA_KEY, "450", Gio.FileQueryInfoFlags.NONE, None
+            )
+        except Exception:
+            self.skipTest("metadata attributes unavailable")
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), 450)
+
+    def test_cache_invalidated_by_external_write(self):
+        data_module.set_column_width(self.folder, 300, store_path=self.store)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), 300)
+        try:
+            # The mirrored attribute would win over the store; blank it.
+            Gio.File.new_for_path(self.folder).set_attribute_string(
+                data_module.WIDTH_METADATA_KEY, "", Gio.FileQueryInfoFlags.NONE, None
+            )
+        except Exception:
+            pass
+        with open(self.store, "w", encoding="utf-8") as handle:
+            json.dump({self.folder: 211, "pad": 1}, handle)
+        self.assertEqual(data_module.resolve_column_width(self.folder, self.store, False), 211)
+
+    def test_package_exports(self):
+        self.assertIs(miller.resolve_column_width, data_module.resolve_column_width)
+        self.assertIs(miller.set_column_width, data_module.set_column_width)
+        self.assertEqual(miller.WIDTH_METADATA_KEY, "metadata::nemo-miller-columns-width")
 
 
 class DataAndThemeTests(unittest.TestCase):
@@ -837,7 +916,8 @@ class DataAndThemeTests(unittest.TestCase):
             "@theme_bg_color",
             "@theme_selected_bg_color",
             "@theme_selected_fg_color",
-            "min-width: 220px",
+            "min-width: 140px",
+            ".mc-column-resize-handle:hover",
             "alpha(@theme_fg_color, 0.12)",
         ):
             self.assertIn(token, css)

@@ -26,6 +26,9 @@ class ConfigContractTest(unittest.TestCase):
 
     def test_layout_knobs(self):
         self.assertEqual(config.COLUMN_WIDTH, 240)
+        self.assertEqual(config.COLUMN_MIN_WIDTH, 140)
+        self.assertEqual(config.COLUMN_MAX_WIDTH, 600)
+        self.assertEqual(config.COLUMN_RESIZE_HANDLE_WIDTH, 6)
         self.assertEqual(config.BOARD_MIN_SIZE, 100)
         self.assertEqual(config.PREVIEW_CONTENT_WIDTH, 360)
         self.assertEqual(config.PREVIEW_CONTENT_MARGIN, 24)

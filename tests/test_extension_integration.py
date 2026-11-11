@@ -182,6 +182,8 @@ class ExtensionIntegrationTests(unittest.TestCase):
         self._old_open = data.open_in_same_window
         self._old_flags = data._preference_flags
         data.DEFAULT_STORE_PATH = os.path.join(self.tmp.name, "folder_views.json")
+        self._old_width_store = data.DEFAULT_WIDTH_STORE_PATH
+        data.DEFAULT_WIDTH_STORE_PATH = os.path.join(self.tmp.name, "column_widths.json")
         preference._reset_caches()
         self.nav_calls = []
 
@@ -210,6 +212,7 @@ class ExtensionIntegrationTests(unittest.TestCase):
             pump()
         if hasattr(self, "_old_store"):
             data.DEFAULT_STORE_PATH = self._old_store
+            data.DEFAULT_WIDTH_STORE_PATH = self._old_width_store
             data.open_in_same_window = self._old_open
             data._preference_flags = self._old_flags
             preference._reset_caches()

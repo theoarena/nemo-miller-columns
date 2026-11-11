@@ -88,7 +88,128 @@ _CTRL_KEY_ACTIONS = {
 
 
 class ColumnInputMixin:
-    """Keys, clicks, and activation."""
+    """Keys, clicks, activation, and the right-edge resize handle."""
+
+    def _bind_resize_handle(self) -> None:
+        """Connect pointer events on ``self.resize_handle``.
+
+        @tags: #scope/widget #action/bind #lifecycle/init
+        """
+        handle = self.resize_handle
+        handle.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
+        handle.connect("enter-notify-event", self._on_resize_enter)
+        handle.connect("leave-notify-event", self._on_resize_leave)
+        handle.connect("button-press-event", self._on_resize_press)
+        handle.connect("motion-notify-event", self._on_resize_motion)
+        handle.connect("button-release-event", self._on_resize_release)
+
+    def _set_resize_cursor(self, active: bool) -> None:
+        """Show the horizontal-resize cursor and highlight on the handle, or restore both.
+
+        The ``--hot`` class is toggled explicitly instead of relying on GTK's
+        ``:hover`` state, which an EventBox does not always receive.
+
+        @tags: #scope/widget #action/render #type/helper
+        """
+        context = self.resize_handle.get_style_context()
+        if active:
+            context.add_class("mc-column-resize-handle--hot")
+        else:
+            context.remove_class("mc-column-resize-handle--hot")
+        window = self.resize_handle.get_window()
+        if window is None:
+            return
+        if not active:
+            window.set_cursor(None)
+            return
+        display = window.get_display()
+        cursor = Gdk.Cursor.new_from_name(display, "col-resize")
+        if cursor is None:
+            cursor = Gdk.Cursor.new_for_display(display, Gdk.CursorType.SB_H_DOUBLE_ARROW)
+        window.set_cursor(cursor)
+
+    def _on_resize_enter(self, _widget, _event) -> bool:
+        """@tags: #scope/widget #action/bind"""
+        self._set_resize_cursor(True)
+        return False
+
+    def _on_resize_leave(self, _widget, _event) -> bool:
+        """@tags: #scope/widget #action/bind"""
+        if not self._resize_dragging:
+            self._set_resize_cursor(False)
+        return False
+
+    def _notify_resize_state(self, active: bool) -> None:
+        """@tags: #scope/widget #action/bind #type/helper"""
+        if self.on_resize_state is not None:
+            self.on_resize_state(active)
+
+    def _on_resize_press(self, _widget, event) -> bool:
+        """Start a drag on a primary press; reset the width on a double press.
+
+        The double press is delivered after the first press already started a
+        drag, so it ends that drag first. The scroll freeze stays on for the
+        reset allocation and is released on idle.
+
+        @tags: #scope/widget #action/bind #action/write #format/int
+        """
+        if event.button != 1:
+            return False
+        if event.type == Gdk.EventType.BUTTON_PRESS:
+            self._resize_dragging = True
+            self._resize_start_x_root = event.x_root
+            self._resize_start_width = self.get_column_width()
+            self._notify_resize_state(True)
+            return True
+        if event.type == Gdk.EventType._2BUTTON_PRESS:
+            self._resize_dragging = False
+            self.reset_column_width()
+            if self.on_width_changed is not None:
+                self.on_width_changed(self, None)
+            GLib.idle_add(self._release_resize_state)
+            return True
+        return False
+
+    def _on_resize_motion(self, _widget, event) -> bool:
+        """Live-resize while the primary button is held.
+
+        @tags: #scope/widget #action/render #format/int
+        """
+        if not self._resize_dragging:
+            return False
+        delta = event.x_root - self._resize_start_x_root
+        self.set_column_width(round(self._resize_start_width + delta))
+        return True
+
+    def _on_resize_release(self, _widget, event) -> bool:
+        """Finish the drag, persist if the width changed, unfreeze on idle.
+
+        @tags: #scope/widget #action/bind #action/write #format/int
+        """
+        if event.button != 1 or not self._resize_dragging:
+            return False
+        self._resize_dragging = False
+        # The pointer may have left the strip during the drag; drop the highlight then.
+        if event.x < 0 or event.x >= self.resize_handle.get_allocated_width():
+            self._set_resize_cursor(False)
+        if self.get_column_width() != self._resize_start_width and self.on_width_changed:
+            self.on_width_changed(self, self.get_column_width())
+        GLib.idle_add(self._release_resize_state)
+        return True
+
+    def _release_resize_state(self) -> bool:
+        """Idle: release the board's scroll freeze once allocation settled.
+
+        @tags: #scope/widget #action/bind #type/helper
+        """
+        self._notify_resize_state(False)
+        return False
 
     def handle_key(self, keyval: int, state: Gdk.ModifierType = 0) -> bool:
         """Handle one key for this column.

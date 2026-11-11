@@ -328,6 +328,12 @@ class MillerColumnsUiTests(unittest.TestCase):
     def setUp(self):
         if not ensure_gtk():
             self.skipTest("GTK display unavailable")
+        # Never touch the user's real width store.
+        self._width_tmp = tempfile.TemporaryDirectory()
+        self._old_width_store = data_module.DEFAULT_WIDTH_STORE_PATH
+        self._old_flags = data_module._preference_flags
+        data_module.DEFAULT_WIDTH_STORE_PATH = os.path.join(self._width_tmp.name, "widths.json")
+        data_module._preference_flags = lambda ignore, inherit: (False, False)
         self.window = Gtk.Window()
         self.window.set_default_size(960, 480)
         self._nemo_saved = {
@@ -342,6 +348,12 @@ class MillerColumnsUiTests(unittest.TestCase):
         nemo_items.extension_items = lambda *a, **k: []
 
     def tearDown(self):
+        if hasattr(self, "_old_width_store"):
+            data_module.DEFAULT_WIDTH_STORE_PATH = self._old_width_store
+            data_module._preference_flags = self._old_flags
+            self._width_tmp.cleanup()
+            from miller import preference as _pref
+            _pref._reset_caches()
         saved = getattr(self, "_nemo_saved", None)
         if saved is not None:
             for name, value in saved.items():
@@ -454,6 +466,94 @@ class MillerColumnsUiTests(unittest.TestCase):
             view.flush_selection()
             self.assertEqual(len(view.columns), 2)
             self.assertEqual(view.columns[1].directory_path, os.path.abspath(sub))
+
+    @staticmethod
+    def _press(column, kind, x=0.0, button=1):
+        event = SimpleNamespace(type=kind, button=button, x_root=x, x=0.0)
+        handler = (
+            column._on_resize_release
+            if kind == Gdk.EventType.BUTTON_RELEASE
+            else column._on_resize_press
+        )
+        return handler(column.resize_handle, event)
+
+    def _drag(self, column, dx):
+        self._press(column, Gdk.EventType.BUTTON_PRESS, 100.0)
+        column._on_resize_motion(
+            column.resize_handle, SimpleNamespace(x_root=100.0 + dx)
+        )
+        self._press(column, Gdk.EventType.BUTTON_RELEASE, 100.0 + dx)
+        pump()
+
+    def test_resize_drag_clamps_and_persists_per_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = os.path.join(tmp, "sub")
+            os.makedirs(sub)
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            self.assertEqual(column.get_column_width(), 240)
+            self._drag(column, 100)
+            self.assertEqual(column.get_column_width(), 340)
+            self.assertEqual(data_module.resolve_column_width(tmp), 340)
+            self._drag(column, 5000)
+            self.assertEqual(column.get_column_width(), 600)
+            self._drag(column, -5000)
+            self.assertEqual(column.get_column_width(), 140)
+            self._drag(column, 150)
+            # Another view of the same folder opens at the saved width.
+            other = self.mount(MillerColumnsView(tmp))
+            self.assertEqual(other.columns[0].get_column_width(), 290)
+            # A different folder keeps the default.
+            self.assertEqual(data_module.resolve_column_width(sub), 240)
+
+    def test_resize_handle_highlight_on_enter_and_leave(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            context = column.resize_handle.get_style_context()
+            hot = "mc-column-resize-handle--hot"
+            self.assertFalse(context.has_class(hot))
+            column._on_resize_enter(column.resize_handle, None)
+            self.assertTrue(context.has_class(hot))
+            column._on_resize_leave(column.resize_handle, None)
+            self.assertFalse(context.has_class(hot))
+
+    def test_resize_double_click_resets_and_clears_saved_width(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            view = self.mount(MillerColumnsView(tmp))
+            column = view.columns[0]
+            self._drag(column, 120)
+            self.assertEqual(column.get_column_width(), 360)
+            self._press(column, Gdk.EventType.BUTTON_PRESS, 0.0)
+            self._press(column, Gdk.EventType._2BUTTON_PRESS, 0.0)
+            pump()
+            self.assertEqual(column.get_column_width(), 240)
+            self.assertEqual(data_module.resolve_column_width(tmp), 240)
+            reopened = self.mount(MillerColumnsView(tmp))
+            self.assertEqual(reopened.columns[0].get_column_width(), 240)
+
+    def test_resize_keeps_horizontal_scroll(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = tmp
+            for index in range(5):
+                path = os.path.join(path, f"d{index}")
+                os.makedirs(path)
+            view = self.mount(MillerColumnsView(path))
+            pump()
+            adjustment = view.scroller.get_hadjustment()
+            adjustment.set_value(0)
+            pump()
+            before = adjustment.get_value()
+            self._press(view.columns[0], Gdk.EventType.BUTTON_PRESS, 100.0)
+            self.assertTrue(view._resizing_column)
+            view.columns[0]._on_resize_motion(
+                view.columns[0].resize_handle, SimpleNamespace(x_root=180.0)
+            )
+            pump()
+            self.assertEqual(adjustment.get_value(), before)
+            self._press(view.columns[0], Gdk.EventType.BUTTON_RELEASE, 180.0)
+            pump()
+            self.assertFalse(view._resizing_column)
 
     def test_selecting_file_shows_text_preview_and_drops_extra_columns(self):
         with tempfile.TemporaryDirectory() as tmp:

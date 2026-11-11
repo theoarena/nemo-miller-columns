@@ -43,12 +43,16 @@ from miller.listing import (
 )
 from miller.preference import (
     DEFAULT_STORE_PATH,
+    DEFAULT_WIDTH_STORE_PATH,
     METADATA_KEY,
     RESERVED_VIEW_KEY,
+    WIDTH_METADATA_KEY,
     _preference_flags,
     _reset_caches,
     is_reserved_location,
+    resolve_column_width,
     resolve_miller_view_preferred,
+    set_column_width,
     set_miller_view_preferred,
 )
 from miller.session import (
@@ -87,8 +91,10 @@ from miller.transfer import (
 
 __all__ = [
     "DEFAULT_STORE_PATH",
+    "DEFAULT_WIDTH_STORE_PATH",
     "METADATA_KEY",
     "RESERVED_VIEW_KEY",
+    "WIDTH_METADATA_KEY",
     "FileEntry",
     "MenuTarget",
     "NemoAction",
@@ -122,7 +128,9 @@ __all__ = [
     "show_file_preview",
     "show_item_properties",
     "transfer_uris",
+    "resolve_column_width",
     "resolve_miller_view_preferred",
+    "set_column_width",
     "set_miller_view_preferred",
     "trash_entry",
 ]

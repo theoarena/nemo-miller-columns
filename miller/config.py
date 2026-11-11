@@ -47,6 +47,20 @@ ROW_BUILD_CHUNK = 40
 # @tags: #type/constant #format/int #scope/widget #scope/shared #type/widget
 COLUMN_WIDTH = 240
 
+# Bounds for a user-resized column. The stylesheet ``min-width`` must match
+# ``COLUMN_MIN_WIDTH`` or GTK would refuse to shrink below it.
+#
+# @tags: #type/constant #format/int #scope/widget #scope/shared #type/widget
+COLUMN_MIN_WIDTH = 140
+
+# @tags: #type/constant #format/int #scope/widget #scope/shared #type/widget
+COLUMN_MAX_WIDTH = 600
+
+# Width in pixels of the draggable strip on a column's right edge.
+#
+# @tags: #type/constant #format/int #scope/widget #scope/shared #type/widget
+COLUMN_RESIZE_HANDLE_WIDTH = 6
+
 # Minimum reported by the board scrolled window so Nemo can shrink.
 #
 # @tags: #type/constant #format/int #scope/widget #scope/shared #type/widget

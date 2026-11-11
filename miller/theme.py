@@ -74,12 +74,22 @@ def build_css() -> str:
 }
 
 .mc-column {
-  min-width: 220px;
+  min-width: 140px;
   background-color: @theme_base_color;
   color: @theme_fg_color;
   border-right-width: 1px;
   border-right-style: solid;
   border-right-color: alpha(@theme_fg_color, 0.12);  
+}
+
+.mc-column-resize-handle {
+  background-color: transparent;
+}
+
+.mc-column-resize-handle:hover,
+.mc-column-resize-handle:active,
+.mc-column-resize-handle.mc-column-resize-handle--hot {
+  background-color: @theme_selected_bg_color;
 }
 
 .mc-column-header {

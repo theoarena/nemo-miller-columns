@@ -22,6 +22,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gio, GLib, Gtk, Pango
 
 from miller.config import (
+    COLUMN_RESIZE_HANDLE_WIDTH,
     EMBLEM_ICON_SIZE,
     MONITOR_DEBOUNCE_MS,
     ROW_BUILD_CHUNK,
@@ -417,6 +418,17 @@ class ColumnListMixin:
         overlay.set_vexpand(True)
         overlay.add(self.list_scroll)
         overlay.add_overlay(self.search_chip)
+        # Right-edge drag strip. Gestures live in ``ColumnInputMixin``.
+        self.resize_handle = Gtk.EventBox()
+        # Needs its own window so the CSS :hover background actually paints.
+        self.resize_handle.set_visible_window(True)
+        self.resize_handle.set_above_child(True)
+        self.resize_handle.set_halign(Gtk.Align.END)
+        self.resize_handle.set_valign(Gtk.Align.FILL)
+        self.resize_handle.set_size_request(COLUMN_RESIZE_HANDLE_WIDTH, -1)
+        self.resize_handle.get_style_context().add_class("mc-column-resize-handle")
+        self._bind_resize_handle()
+        overlay.add_overlay(self.resize_handle)
         self.pack_start(overlay, True, True, 0)
         attach_drag_and_drop(self)
 
@@ -602,11 +614,12 @@ class ColumnListMixin:
             )
             icon.set_pixel_size(ROW_ICON_SIZE)
         name = Gtk.Label(label=entry.name)
-        name.set_halign(Gtk.Align.START)
+        # FILL, not START, with no char cap: START pins the allocation to the
+        # natural width, so a widened column would never show more of the name.
+        name.set_halign(Gtk.Align.FILL)
         name.set_hexpand(True)
         name.set_xalign(0)
         name.set_ellipsize(Pango.EllipsizeMode.END)
-        name.set_max_width_chars(24)
         row.name_label = name
 
         box.pack_start(icon, False, False, 0)

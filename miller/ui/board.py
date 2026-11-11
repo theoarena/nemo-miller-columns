@@ -40,6 +40,7 @@ from miller.config import (
     KEYBOARD_DIR_DELAY_MS,
     KEYBOARD_PREVIEW_DELAY_MS,
 )
+import miller.data as data
 from miller.data import FileEntry
 from miller.theme import bind_accent_ink, install_theme
 from miller.ui.column import MillerColumn
@@ -144,6 +145,9 @@ class MillerColumnsView(Gtk.EventBox):
         self._pending: Optional[tuple[MillerColumn, Optional[FileEntry]]] = None
         self._scroll_source = 0
         self._scrolling = False
+        # True while a column handle is dragged: the strip keeps its scroll
+        # offset instead of snapping to the right end.
+        self._resizing_column = False
         self._hscroll_changed_id = 0
         self._notified_path: Optional[str] = None
         self._dead = False
@@ -277,7 +281,12 @@ class MillerColumnsView(Gtk.EventBox):
 
         @tags: #scope/widget #action/render
         """
-        if self._dead or self._scrolling or not self.get_realized():
+        if (
+            self._dead
+            or self._scrolling
+            or self._resizing_column
+            or not self.get_realized()
+        ):
             return
         adjustment = self.scroller.get_hadjustment()
         if adjustment is None:
@@ -548,7 +557,7 @@ class MillerColumnsView(Gtk.EventBox):
 
         @tags: #scope/widget #scope/view-preference #action/render #lifecycle/init
         """
-        return MillerColumn(
+        column = MillerColumn(
             path,
             on_select=self._on_column_select,
             on_activate_dir=self._on_nav_right,
@@ -556,6 +565,37 @@ class MillerColumnsView(Gtk.EventBox):
             on_nav_right=self._on_nav_right,
             show_hidden=self.show_hidden,
         )
+        column.set_column_width(data.resolve_column_width(column.directory_path))
+        column.on_resize_state = self._on_resize_state
+        column.on_width_changed = self._on_column_width_changed
+        return column
+
+    def _on_resize_state(self, active: bool) -> None:
+        """Freeze or release the horizontal auto-scroll around a drag.
+
+        @tags: #scope/widget #action/bind #type/helper
+        """
+        self._resizing_column = bool(active)
+
+    def _on_column_width_changed(self, column: MillerColumn, width: Optional[int]) -> None:
+        """Persist a finished resize and mirror it to same-folder columns.
+
+        ``None`` resets: the saved entry is cleared and the width returns to
+        the default. Nothing is written when Nemo is set to ignore folder
+        metadata.
+
+        @tags: #scope/widget #scope/view-preference #action/write #side-effect/filesystem #format/int
+        """
+        ignore_metadata, _inherit = data._preference_flags(None, None)
+        if not ignore_metadata:
+            data.set_column_width(column.directory_path, width)
+        for other in self.columns:
+            if other is column or other.directory_path != column.directory_path:
+                continue
+            if width is None:
+                other.reset_column_width()
+            else:
+                other.set_column_width(width)
 
     def _append_column(self, path: str) -> MillerColumn:
         """_append_column.
