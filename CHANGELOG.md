@@ -2,6 +2,9 @@
 
 ## [Latest]
 
+### Added
+- **Individual column resizing:** Drag the right edge of any column to adjust its width. The separator highlights with the theme accent color on hover, and double-clicking it resets the column back to its default size. Your preferred width is automatically remembered per folder.
+
 ### Improved
 - **Inline rename (`F2`):** When renaming a file with an extension, only the filename stem is selected automatically so you don't accidentally overwrite the extension. The text field also reliably retains keyboard focus while typing.
 - **Smoother keyboard navigation:** Scrolling rapidly through files with the Up/Down arrow keys briefly pauses preview generation until navigation settles, making keyboard browsing significantly faster and more responsive.
