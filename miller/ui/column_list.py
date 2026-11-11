@@ -209,6 +209,9 @@ class ColumnListMixin:
         While the first listing is still running there is no row to focus.
         The call waits and runs again once the rows exist, so a tab restore
         does not land on the loading placeholder and then get stuck there.
+        When an inline rename entry is open, focus stays on that entry via
+        ``grab_focus_without_selecting`` so a delayed host ``location-changed``
+        echo does not steal focus back to the row or reset the stem selection.
 
         ``Gtk.ListBox`` itself is not focusable. Focus goes to the selected
         row when that row still matches the search, otherwise the first
@@ -220,6 +223,12 @@ class ColumnListMixin:
         """
         if self._defer_until_loaded(self.focus_row):
             return
+        for child in self.listbox.get_children():
+            rename_widget = getattr(child, "rename_widget", None)
+            if rename_widget is not None:
+                self.set_can_focus(False)
+                rename_widget.grab_focus_without_selecting()
+                return
         selected = self.listbox.get_selected_row()
         row = selected if self._is_visible_real_row(selected) else None
         if row is None:

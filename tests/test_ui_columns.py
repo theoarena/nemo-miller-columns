@@ -1233,6 +1233,75 @@ class MillerColumnsUiTests(unittest.TestCase):
             self.assertEqual(entry.name, "Docs")
             self.assertEqual(column.get_selected().name, "Docs")
 
+    def test_rename_selects_stem_keeps_focus_and_uses_flat_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("report.txt", "archive.tar.gz", "Makefile", ".bashrc"):
+                with open(os.path.join(tmp, name), "w", encoding="utf-8") as handle:
+                    handle.write(name)
+            os.makedirs(os.path.join(tmp, "folder.v1"))
+            view = self.mount(MillerColumnsView(tmp, show_hidden=True))
+            column = view.columns[0]
+
+            cases = (
+                ("report.txt", (0, 6)),
+                ("archive.tar.gz", (0, 11)),
+                ("Makefile", (0, 8)),
+                (".bashrc", (0, 7)),
+                ("folder.v1", (0, 9)),
+            )
+            for name, expected_bounds in cases:
+                column.select_name(name)
+                view.flush_selection()
+                column.begin_rename()
+                row = _row_named(column, name)
+                rename = getattr(row, "rename_widget", None)
+                self.assertIsNotNone(rename, name)
+                self.assertFalse(rename.get_has_frame(), name)
+                self.assertTrue(
+                    rename.get_style_context().has_class("mc-rename-entry"),
+                    name,
+                )
+                self.assertIs(self.window.get_focus(), rename, name)
+                self.assertEqual(tuple(rename.get_selection_bounds()), expected_bounds, name)
+
+                # A custom cursor selection must survive column.focus_row() and
+                # view.focus_active_column() without resetting to (0, -1).
+                rename.select_region(1, 3)
+                column.focus_row()
+                self.assertIs(self.window.get_focus(), rename, name)
+                self.assertEqual(tuple(rename.get_selection_bounds()), (1, 3), name)
+
+                view.focus_active_column()
+                self.assertIs(self.window.get_focus(), rename, name)
+                self.assertEqual(tuple(rename.get_selection_bounds()), (1, 3), name)
+
+                # Calling begin_rename again on an open widget restores stem selection.
+                column.begin_rename()
+                self.assertIs(self.window.get_focus(), rename, name)
+                self.assertEqual(tuple(rename.get_selection_bounds()), expected_bounds, name)
+
+                column._end_rename_widget()
+
+            # Context-menu "Rename…" activation followed by menu popdown / focus loss
+            # restores focus and stem selection on the next idle tick.
+            column.select_name("report.txt")
+            view.flush_selection()
+            menu = column._build_context_menu()
+            rename_item = next(
+                item for item in menu.get_children() if item.get_label() == "Rename\u2026"
+            )
+            rename_item.activate()
+            row = _row_named(column, "report.txt")
+            rename = getattr(row, "rename_widget", None)
+            self.assertIsNotNone(rename)
+            # Simulate Gtk.Menu popdown moving focus back to the row before idle runs.
+            row.grab_focus()
+            self.assertIs(self.window.get_focus(), row)
+            pump()
+            self.assertIs(self.window.get_focus(), rename)
+            self.assertEqual(tuple(rename.get_selection_bounds()), (0, 6))
+            column._end_rename_widget()
+
     def test_create_folder_disambiguates_existing_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "New Folder"))

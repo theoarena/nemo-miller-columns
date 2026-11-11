@@ -14,10 +14,28 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from miller.data import MenuTarget, rename_entry
+from miller.data import FileEntry, MenuTarget, rename_entry
 from miller.i18n import _
 from miller.ui.nemo_items import action_items, extension_menu_items, scripts_menu_item
 from miller.ui.open_with import open_with_menu_item
+
+
+def _rename_selection_end(entry: FileEntry) -> int:
+    """Return the character end index to pre-select when renaming ``entry``.
+
+    Directories, extensionless files, and leading-dot files without a second
+    extension return ``-1`` so ``Gtk.Editable.select_region(0, -1)`` selects
+    the entire name. Regular files with an extension return ``len(stem)`` so
+    only the filename stem is selected.
+
+    @tags: #scope/file-ops #scope/widget #action/read #type/helper #side-effect/pure-function
+    """
+    if entry.is_dir:
+        return -1
+    stem, ext = os.path.splitext(entry.name)
+    if stem and ext:
+        return len(stem)
+    return -1
 
 
 def _column_module():
@@ -76,6 +94,8 @@ class ColumnMenuMixin:
         Enter commits through ``commit_rename``. Escape restores the label.
         No selection, or the empty placeholder, does nothing. An active
         search is cleared first so the entry is not sitting on a hidden row.
+        Only the filename stem is selected for regular files with an
+        extension; folders, dotfiles, and extensionless files select all.
 
         @tags: #scope/file-ops #scope/navigation #action/render #action/clear #scope/widget
         """
@@ -84,14 +104,18 @@ class ColumnMenuMixin:
         row = self._row_named(entry.name) if entry is not None else None
         if row is None:
             return
+        selection_end = _rename_selection_end(entry)
         existing = getattr(row, "rename_widget", None)
         if existing is not None:
             existing.grab_focus()
-            existing.select_region(0, -1)
+            existing.select_region(0, selection_end)
+            self._schedule_rename_focus_restore(row, existing, selection_end)
             return
 
         label = row.name_label
         rename_entry = Gtk.Entry()
+        rename_entry.set_has_frame(False)
+        rename_entry.get_style_context().add_class("mc-rename-entry")
         rename_entry.set_text(entry.name)
         rename_entry.set_hexpand(True)
         box = row.get_child()
@@ -103,7 +127,35 @@ class ColumnMenuMixin:
         rename_entry.connect("key-press-event", self._on_rename_key)
         rename_entry.show()
         rename_entry.grab_focus()
-        rename_entry.select_region(0, -1)
+        # grab_focus() applies gtk-entry-select-on-focus and selects (0, -1),
+        # so select_region must run after it.
+        rename_entry.select_region(0, selection_end)
+        self._schedule_rename_focus_restore(row, rename_entry, selection_end)
+
+    def _schedule_rename_focus_restore(
+        self,
+        row: Gtk.ListBoxRow,
+        rename_widget: Gtk.Entry,
+        selection_end: int,
+    ) -> None:
+        """Ensure focus and stem selection survive context-menu popdown on idle.
+
+        Activating "Rename…" from a ``Gtk.Menu`` runs before the menu finishes
+        popping down; its ungrab/deactivate cycle can move window focus back to
+        the row or clear the entry selection.
+
+        @tags: #scope/file-ops #scope/navigation #action/bind #scope/widget #type/helper
+        """
+        def restore() -> bool:
+            if getattr(self, "_dead", False) or getattr(row, "rename_widget", None) is not rename_widget:
+                return False
+            toplevel = self.get_toplevel()
+            if isinstance(toplevel, Gtk.Window) and toplevel.get_focus() is not rename_widget:
+                rename_widget.grab_focus()
+                rename_widget.select_region(0, selection_end)
+            return False
+
+        GLib.idle_add(restore)
 
     def commit_rename(self, new_name: str) -> None:
         """Rename the selection to ``new_name``, reload, and select it.

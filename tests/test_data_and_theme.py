@@ -895,6 +895,8 @@ class DataAndThemeTests(unittest.TestCase):
             ".mc-row",
             ".mc-row:selected",
             ".mc-column-current .mc-row:selected",
+            ".mc-rename-entry",
+            ".mc-rename-entry:focus",
             ".mc-chevron",
             ".mc-preview",
             ".mc-preview-content",
@@ -918,9 +920,26 @@ class DataAndThemeTests(unittest.TestCase):
             "@theme_selected_fg_color",
             "min-width: 140px",
             ".mc-column-resize-handle:hover",
+            "transition: background-color 250ms ease-in-out;",
             "alpha(@theme_fg_color, 0.12)",
         ):
             self.assertIn(token, css)
+        self.assertIn(
+            ".mc-rename-entry,\n.mc-rename-entry:focus {",
+            css,
+        )
+        rename_block = css.split(".mc-rename-entry,\n.mc-rename-entry:focus {", 1)[1].split("}", 1)[0]
+        for rule in (
+            "background-color: transparent;",
+            "background-image: none;",
+            "border-width: 0;",
+            "border-style: none;",
+            "box-shadow: none;",
+            "outline-width: 0;",
+        ):
+            self.assertIn(rule, rename_block)
+        row_block = css.split(".mc-row {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("box-shadow: none", row_block)
         self.assertNotIn(".mc-action", css)
         self.assertNotRegex(css, r"#[0-9A-Fa-f]{3,8}")
         if not ensure_gtk():
@@ -938,6 +957,12 @@ class DataAndThemeTests(unittest.TestCase):
         )
         self.assertIn(
             ".mc-root.mc-accent-ink .mc-column-current .mc-row:selected label {\n"
+            "  color: @theme_selected_fg_color;",
+            css,
+        )
+        self.assertIn(
+            ".mc-root.mc-accent-ink .mc-column-current .mc-row:selected .mc-rename-entry,\n"
+            ".mc-root.mc-accent-ink .mc-column-current .mc-row:selected .mc-rename-entry:focus {\n"
             "  color: @theme_selected_fg_color;",
             css,
         )

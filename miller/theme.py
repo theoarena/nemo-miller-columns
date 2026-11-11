@@ -84,6 +84,7 @@ def build_css() -> str:
 
 .mc-column-resize-handle {
   background-color: transparent;
+  transition: background-color 250ms ease-in-out;
 }
 
 .mc-column-resize-handle:hover,
@@ -171,6 +172,28 @@ def build_css() -> str:
 
 .mc-root.__ACCENT_INK__ .mc-column-current .mc-row:selected,
 .mc-root.__ACCENT_INK__ .mc-column-current .mc-row:selected label {
+  color: @theme_selected_fg_color;
+}
+
+.mc-rename-entry,
+.mc-rename-entry:focus {
+  background-color: transparent;
+  background-image: none;
+  color: @theme_fg_color;
+  border-width: 0;
+  border-style: none;
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  outline-width: 0;
+  outline-style: none;
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+}
+
+.mc-root.__ACCENT_INK__ .mc-column-current .mc-row:selected .mc-rename-entry,
+.mc-root.__ACCENT_INK__ .mc-column-current .mc-row:selected .mc-rename-entry:focus {
   color: @theme_selected_fg_color;
 }
 

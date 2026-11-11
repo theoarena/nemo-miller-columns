@@ -239,13 +239,18 @@ class MillerColumnsView(Gtk.EventBox):
         was asked to show, and a click does move it. Restoring focus from
         ``focused_index`` after a tab switch handed Up/Down to the root
         column, which pruned the chain. Tab restore has to keep using the
-        accent.
+        accent. When an inline rename entry is open in any column, focus
+        stays on that column's rename entry.
 
         ``Gtk.ListBox`` does not take focus. The column focuses its selected
         row, or the first real row, or the empty placeholder.
 
         @tags: #scope/navigation #action/bind #scope/widget
         """
+        for item in self.columns:
+            if item._rename_active():
+                item.focus_row()
+                return
         column = self._current_column
         if column not in self.columns:
             if self.focused_index < 0 or self.focused_index >= len(self.columns):

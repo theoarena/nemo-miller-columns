@@ -1150,6 +1150,58 @@ class ExtensionIntegrationTests(unittest.TestCase):
             column_module.copy_to_clipboard = original_copy
             column_module.paste_from_clipboard = original_paste
 
+    def test_f2_key_does_not_reach_nemo_when_a_column_has_focus(self):
+        folder = self._make_dir("f2-rename")
+        with open(os.path.join(folder, "report.txt"), "w", encoding="utf-8") as handle:
+            handle.write("r")
+        data.set_miller_view_preferred(folder, True)
+        self._open(self.slot, folder)
+        view = self.slot._miller_view
+        column = view.columns[0]
+        self.window.present()
+        pump()
+        column.select_name("report.txt")
+        view.focus_active_column()
+        pump()
+
+        nemo = []
+        group = Gtk.AccelGroup()
+        self.window.add_accel_group(group)
+        group.connect(
+            Gdk.KEY_F2,
+            0,
+            Gtk.AccelFlags.VISIBLE,
+            lambda *_args: nemo.append("rename") or True,
+        )
+
+        _dispatch_key(self.window, Gdk.KEY_F2)
+        self.assertEqual(nemo, [])
+        row = column._row_named("report.txt")
+        rename = getattr(row, "rename_widget", None)
+        self.assertIsNotNone(rename)
+        self.assertIs(self.window.get_focus(), rename)
+        self.assertEqual(tuple(rename.get_selection_bounds()), (0, 6))
+
+        # While rename_widget already has focus, Miller does not re-consume F2.
+        _dispatch_key(self.window, Gdk.KEY_F2)
+        self.assertEqual(nemo, ["rename"])
+        column._end_rename_widget()
+        pump()
+
+        # When a non-column Gtk.Entry (e.g., location bar) has focus, Miller does not consume F2.
+        entry = None
+        for widget in self.ext._walk(self.window):
+            if isinstance(widget, Gtk.Entry):
+                entry = widget
+                break
+        self.assertIsNotNone(entry)
+        entry.grab_focus()
+        pump()
+        nemo.clear()
+        _dispatch_key(self.window, Gdk.KEY_F2)
+        self.assertEqual(nemo, ["rename"])
+        self.assertIsNone(getattr(row, "rename_widget", None))
+
 class InstallScriptTests(unittest.TestCase):
     """install.sh copies or links the extension and removes it cleanly."""
 

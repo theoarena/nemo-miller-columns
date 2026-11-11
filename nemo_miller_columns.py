@@ -221,13 +221,15 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         return None
 
     def handle_window_key(self, window: Gtk.Window, event) -> bool:
-        """Switch the view from a window-level key press.
+        """Switch the view or claim column-owned shortcuts from a window key press.
 
         Ctrl+4 (and keypad 4) turns Miller on for a normal directory.
         Ctrl+1, Ctrl+2, and Ctrl+3 turn it off and let Nemo's own view
         buttons win. The same chords on a reserved location or a
         non-directory are consumed and change nothing, so a view preference
-        is not stored there.
+        is not stored there. Plain ``F2`` and plain Ctrl+C/X/V are routed
+        to the focused Miller column before ``Gtk.Window`` activates Nemo's
+        hidden-view accelerators.
 
         Args:
             window: Window that received the event.
@@ -235,9 +237,9 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
 
         Returns:
             True when Control is held and the key is 1, 2, 3, or 4.
-            True for plain Ctrl+C/X/V while a Miller column has focus, so
-            Nemo's Edit accelerators do not also run. False for every other
-            event so the focused widget still sees it.
+            True for plain ``F2`` or plain Ctrl+C/X/V while a Miller column
+            has focus, so Nemo's Edit accelerators do not also run. False
+            for every other event so the focused widget still sees it.
 
         @tags: #scope/view-preference #scope/widget #scope/navigation #scope/file-ops #action/toggle #action/clear #action/bind #side-effect/clipboard
         """
@@ -245,11 +247,11 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         # one. The column sets it again if this press is a leading Space.
         window._miller_space_column = None
         state = getattr(event, "state", 0) or 0
-        # View switching is a window chord. Without Control the key belongs
-        # to the focused column.
-        if not (state & Gdk.ModifierType.CONTROL_MASK):
-            return False
         keyval = getattr(event, "keyval", 0)
+        if not (state & Gdk.ModifierType.CONTROL_MASK):
+            if self._claim_rename_key(window, keyval, state):
+                return True
+            return False
         if keyval in _ENABLE_KEYS:
             if self._is_normal_directory(window):
                 self._apply_user_choice(window, True)
@@ -261,6 +263,43 @@ class MillerColumnsExtension(GObject.GObject, Nemo.LocationWidgetProvider):
         if self._claim_clipboard_key(window, keyval, state):
             return True
         return False
+
+    def _claim_rename_key(self, window: Gtk.Window, keyval: int, state: int) -> bool:
+        """Start inline rename on the focused column and stop Nemo's F2 binding.
+
+        ``Gtk.Window`` activates accelerators before propagating keys to the
+        focused widget. Nemo binds ``F2`` to its hidden directory view, so
+        returning True here routes plain ``F2`` (without Control, Shift, or
+        Alt) directly to the focused Miller column unless a text widget or
+        an existing inline rename already holds focus.
+
+        Args:
+            window: Window that received the event.
+            keyval: GDK key value.
+            state: Modifier mask.
+
+        Returns:
+            True when the focused Miller column handled ``F2``.
+
+        @tags: #scope/file-ops #scope/widget #scope/navigation #action/read #action/bind #type/helper
+        """
+        if keyval != Gdk.KEY_F2:
+            return False
+        # Plain F2 only: Control, Shift, or Alt chords belong to their own bindings.
+        if state & (
+            Gdk.ModifierType.CONTROL_MASK
+            | Gdk.ModifierType.SHIFT_MASK
+            | Gdk.ModifierType.MOD1_MASK
+        ):
+            return False
+        column = self._focused_miller_column(window)
+        if column is None or getattr(column, "_dead", False):
+            return False
+        focus = window.get_focus()
+        if isinstance(focus, (Gtk.Entry, Gtk.TextView)) or column._rename_active():
+            return False
+        column.handle_key(keyval, state)
+        return True
 
     def _claim_clipboard_key(self, window: Gtk.Window, keyval: int, state: int) -> bool:
         """Copy, cut, or paste on the focused column and stop Nemo's binding.
